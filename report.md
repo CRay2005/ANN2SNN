@@ -522,4 +522,76 @@ class IF(nn.Module):
 
 
 
-    
+## 下一步方向
+T>64，对于4090显卡报错超出内存
+
+SNN的准确率在相关领域、相关数据集上已经很容易接近和超过ANN。
+
+最近大模型的火爆、deepseek在计算资源方面的大幅度降低，让人们将注意力在关注进一步优化效果的同时，
+也将更多的注意力转移到更节省资源的模型算法上。
+"Inference-Scale Complexity in ANN-SNN Conversion for High-Performance and  Low-Power Applications"
+"Nevertheless, the pursuit of larger models raises concerns about high energy consumption for model 
+inference and training. The deployment of large models on resource-constrained devices has also become a challenge."
+
+
+
+
+
+在cifar-10数据集上Un. ErrorII 统计的数据如下：
+以Layer0， T=4为例，其它层统计数据分布趋势基本相似
+αι=0,                                                                  0.3344
+αι>0, 0.6656
+Case 1: αι=0，ϕι (T ) >αι                                                      0.1593
+Case 2: αι>0，ϕι (T ) >αι  (包含Case 4)            0.0862
+Case 3: αι>0，ϕι (T ) <αι                                                      0.2118
+hook_outputs 中大于0的浮点数: 4383151 (比例: 0.3344)
+hook_outputs 中等于0的浮点数: 8724049 (比例: 0.6656)
+hook_outputs 中等于0，且 hook_outputs-SNN 等于 hook_outputs 的浮点数: 6636575 (比例: 0.5063)
+hook_outputs 中等于0，且 hook_outputs-SNN 大于 hook_outputs 的浮点数: 2087474 (比例: 0.1593)
+hook_outputs 中大于0，且 hook_outputs-SNN 等于 hook_outputs 的浮点数: 477602 (比例: 0.0364)
+hook_outputs 中大于0，且 hook_outputs-SNN 大于 hook_outputs 的浮点数: 1129790 (比例: 0.0862)
+hook_outputs 中大于0，且 hook_outputs-SNN 小于 hook_outputs 的浮点数: 2775759 (比例: 0.2118)
+
+Layer0:    T=8
+
+浮点数总数: 13107200
+hook_outputs 中大于0的浮点数: 4383151 (比例: 0.3344)
+hook_outputs 中等于0的浮点数: 8724049 (比例: 0.6656)
+hook_outputs 中等于0，且 hook_outputs-SNN 等于 hook_outputs 的浮点数: 5945379 (比例: 0.4536)
+hook_outputs 中等于0，且 hook_outputs-SNN 大于 hook_outputs 的浮点数: 2778670 (比例: 0.2120)
+hook_outputs 中大于0，且 hook_outputs-SNN 等于 hook_outputs 的浮点数: 521597 (比例: 0.0398)
+hook_outputs 中大于0，且 hook_outputs-SNN 大于 hook_outputs 的浮点数: 1102790 (比例: 0.0841)
+hook_outputs 中大于0，且 hook_outputs-SNN 小于 hook_outputs 的浮点数: 2758764 (比例: 0.2105)
+Layer1:    T=4
+
+浮点数总数: 13107200
+hook_outputs 中大于0的浮点数: 3932910 (比例: 0.3001)
+hook_outputs 中等于0的浮点数: 9174290 (比例: 0.6999)
+hook_outputs 中等于0，且 hook_outputs-SNN 等于 hook_outputs 的浮点数: 5800633 (比例: 0.4426)
+hook_outputs 中等于0，且 hook_outputs-SNN 大于 hook_outputs 的浮点数: 3373657 (比例: 0.2574)
+hook_outputs 中大于0，且 hook_outputs-SNN 等于 hook_outputs 的浮点数: 5021 (比例: 0.0004)
+hook_outputs 中大于0，且 hook_outputs-SNN 大于 hook_outputs 的浮点数: 905176 (比例: 0.0691)
+hook_outputs 中大于0，且 hook_outputs-SNN 小于 hook_outputs 的浮点数: 3022713 (比例: 0.2306)
+Layer2:    T=4
+
+浮点数总数: 6553600
+hook_outputs 中大于0的浮点数: 2072654 (比例: 0.3163)
+hook_outputs 中等于0的浮点数: 4480946 (比例: 0.6837)
+hook_outputs 中等于0，且 hook_outputs-SNN 等于 hook_outputs 的浮点数: 3024473 (比例: 0.4615)
+hook_outputs 中等于0，且 hook_outputs-SNN 大于 hook_outputs 的浮点数: 1456473 (比例: 0.2222)
+hook_outputs 中大于0，且 hook_outputs-SNN 等于 hook_outputs 的浮点数: 652 (比例: 0.0001)
+hook_outputs 中大于0，且 hook_outputs-SNN 大于 hook_outputs 的浮点数: 393637 (比例: 0.0601)
+hook_outputs 中大于0，且 hook_outputs-SNN 小于 hook_outputs 的浮点数: 1678365 (比例: 0.2561)
+
+Layer3:    T=4
+
+浮点数总数: 6553600
+hook_outputs 中大于0的浮点数: 1390589 (比例: 0.2122)
+hook_outputs 中等于0的浮点数: 5163011 (比例: 0.7878)
+hook_outputs 中等于0，且 hook_outputs-SNN 等于 hook_outputs 的浮点数: 3886878 (比例: 0.5931)
+hook_outputs 中等于0，且 hook_outputs-SNN 大于 hook_outputs 的浮点数: 1276133 (比例: 0.1947)
+hook_outputs 中大于0，且 hook_outputs-SNN 等于 hook_outputs 的浮点数: 91513 (比例: 0.0140)
+hook_outputs 中大于0，且 hook_outputs-SNN 大于 hook_outputs 的浮点数: 165136 (比例: 0.0252)
+hook_outputs 中大于0，且 hook_outputs-SNN 小于 hook_outputs 的浮点数: 1133940 (比例: 0.1730)
+
+

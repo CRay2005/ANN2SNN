@@ -99,6 +99,15 @@ class IF(nn.Module):
 
                 spike_pot.append(spike)
 
+                # 收集所有大于阈值的元素
+                exceeding = mem[mem > thre]
+                # T循环结束后，检查是否还有残余模电压大于阈值
+                if (t==(self.T-1)) and (exceeding.numel() > 0):  # 检查张量是否非空
+                    # 打印阈值
+                    print("Threshold:", thre.item())
+                    # 逐个打印超过的值
+                    print("Values exceeding threshold:", exceeding)
+                    
             x = torch.stack(spike_pot, dim=0)
             x = self.merge(x)
 

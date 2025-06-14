@@ -1,3 +1,6 @@
 *.txt
 *.pth
 *.pth.un
+*.csv
+*.log
+hstnn-demo/

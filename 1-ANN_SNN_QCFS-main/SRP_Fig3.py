@@ -4,41 +4,70 @@ from datetime import datetime
 import numpy as np
 
 # 定义文件夹路径
-hook_outputs_dir = 'hook_outputs'
-hook_outputs_snn_dir = 'hook_outputs-SNN'
+hook_outputs_dir = 'hook_outputs_ANN'
+hook_outputs_snn_dir = 'hook_outputs_SNN'
 
 # 获取文件夹中的文件列表，并按时间排序
 def get_sorted_files(directory):
     files = os.listdir(directory)
     files = [f for f in files if f.endswith('.txt')]
     # 按文件名中的时间戳排序
-    files.sort(key=lambda x: datetime.strptime(re.search(r'\d{8}_\d{6}', x).group(), '%Y%m%d_%H%M%S'))
+    files.sort(key=lambda x: datetime.strptime(re.search(r'\d{8}_\d{6}_\d{6}', x).group(), '%Y%m%d_%H%M%S_%f'))
     return files
 
 # 读取 hook_outputs 文件中的浮点数数据
 def read_hook_outputs(filepath):
     with open(filepath, 'r') as file:
         lines = file.readlines()
-    output_index = lines.index('Output:64\n') + 1
+
+    pattern = r'^Output:\d+\s*$'  # 匹配 "Output:" 后接任意数字的整行
+    output_indices = [i for i, line in enumerate(lines) if re.match(pattern, line.strip())]
+
+    if not output_indices:
+        raise ValueError("未找到有效的 Output 标记")
+
+    # 取最后一个 Output 标记（可根据需求改为 output_indices[0]）
+    output_line_index = output_indices[-1]
+
+
+    #output_index = lines.index('Output:64\n') + 1
+    output_index = output_line_index + 1
+
     floats = []
     for line in lines[output_index:]:
         if line.strip():
             floats.extend(map(float, line.strip().split()))
     # 将数据转换为 200 * 64 * 32 * 32 的格式
-    floats = np.array(floats).reshape(200, 64, 32, 32)
+    #floats = np.array(floats).reshape(200, 64, 32, 32)
+    floats = np.array(floats).reshape(200, 128, 16, 16)
     return floats
 
 # 读取 hook_outputs-SNN 文件中的浮点数数据，并对重复的4遍数据取平均
 def read_hook_outputs_snn(filepath):
     with open(filepath, 'r') as file:
         lines = file.readlines()
-    output_index = lines.index('Output:64\n') + 1
+
+    pattern = r'^Output:\d+\s*$'  # 匹配 "Output:" 后接任意数字的整行
+    output_indices = [i for i, line in enumerate(lines) if re.match(pattern, line.strip())]
+
+    if not output_indices:
+        raise ValueError("未找到有效的 Output 标记")
+
+    # 取最后一个 Output 标记（可根据需求改为 output_indices[0]）
+    output_line_index = output_indices[-1]
+
+
+    #output_index = lines.index('Output:64\n') + 1
+    output_index = output_line_index + 1
+
+
     floats = []
     for line in lines[output_index:]:
         if line.strip():
             floats.extend(map(float, line.strip().split()))
     # 将数据转换为 200 * 4 * 64 * 32 * 32 的格式
-    floats = np.array(floats).reshape(200, 4, 64, 32, 32)
+    #floats = np.array(floats).reshape(200, 4, 64, 32, 32)
+    floats = np.array(floats).reshape(200, 4, 128, 16, 16)
     # 对重复的4遍数据取平均，得到 200 * 64 * 32 * 32 的格式
     floats = np.mean(floats, axis=1)
     return floats

@@ -92,7 +92,7 @@ def val(model, test_loader, device, T):
         #print(f"Input tensor:\n{x[0]}")     
         #print(f"Outnput tensor:\n{y}")   
         print(f"m.thresh:{m.thresh}")
-        return
+        # return
         # 获取当前时间戳
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         # 创建保存目录
@@ -152,12 +152,35 @@ def val(model, test_loader, device, T):
     #对于给定的输入size，查看整个网络模型的输入输出结构
     #summary(model, input_size=[[3, 32, 32]])
     
-    test_layer = list_modules(model)
+    # test_layer = list_modules(model)
+    
+    # 打印模型网络结构
+    # print("="*50)
+    # print("模型网络结构:")
+    # print("="*50)
+    # print(model)
+    # print("="*50)
+    # print("模型各层详细信息:")
+    # print("="*50)
+    # for name, module in model.named_modules():
+    #     print(f"层名: {name}, 层类型: {module.__class__.__name__}")
+    #     if hasattr(module, 'in_features') and hasattr(module, 'out_features'):
+    #         print(f"  输入特征数: {module.in_features}, 输出特征数: {module.out_features}")
+    #     elif hasattr(module, 'in_channels') and hasattr(module, 'out_channels'):
+    #         print(f"  输入通道数: {module.in_channels}, 输出通道数: {module.out_channels}")
+    #         if hasattr(module, 'kernel_size'):
+    #             print(f"  卷积核大小: {module.kernel_size}")
+    #     if 'IF' in module.__class__.__name__:
+    #         print(f"  IF层参数 - T: {module.T}, 阈值: {module.thresh.data}, tau: {module.tau}")
+    # print("="*50)
+    
     #print(f"NFmodels:{test_layer}\n")
     
     #print(f"test_layer:{test_layer[6]}\n")
     #print("注册钩子！")
     #hook = test_layer[0].register_forward_hook(save_hook)
+
+    
 
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate((test_loader)):
@@ -169,8 +192,10 @@ def val(model, test_loader, device, T):
             _, predicted = outputs.cpu().max(1)
             total += float(targets.size(0))
             correct += float(predicted.eq(targets).sum().item())
-            #为了便于测试，仅运行一个batchsize就退出
-            #break
-
+            # # 为了便于测试，仅运行一个batchsize就退出
+            # if batch_idx == 10:
+            #     break
+            # print(f"batch:{batch_idx}\n")
+            # print(f"final_acc:{100 * correct / total}\n")
         final_acc = 100 * correct / total
     return final_acc

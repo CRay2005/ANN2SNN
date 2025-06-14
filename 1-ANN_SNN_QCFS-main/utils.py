@@ -86,7 +86,6 @@ def val(model, test_loader, device, T):
     total = 0
     model.eval()
 
-    # cxqian test version
     # 定义钩子函数
     def save_hook(m, x, y):
         #print(f"Input tensor:\n{x[0]}")     
@@ -94,18 +93,22 @@ def val(model, test_loader, device, T):
         #print(f"m.thresh:{m.thresh}")
 
         # 获取当前时间戳
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         # 创建保存目录
-        os.makedirs("hook_outputs", exist_ok=True)
-        # 生成文件名
-        filename = f"hook_outputs/{m.__class__.__name__}_{timestamp}.txt"
+        if T==0:
+            os.makedirs("hook_outputs_ANN", exist_ok=True)
+            filename = f"hook_outputs_ANN/{m.__class__.__name__}_{timestamp}.txt"
+        else:
+            os.makedirs("hook_outputs_SNN", exist_ok=True)
+            # 生成文件名
+            filename = f"hook_outputs_SNN/{m.__class__.__name__}_{timestamp}.txt"
         # 保存输出到文件
         #torch.save(x[0], filename)
         #torch.save(y, filename)
 
         with open(filename, 'a') as f:      
-            f.write(f"Input:{x[0].shape[1]}\n")
-            np.savetxt(f, x[0].detach().cpu().numpy().reshape(-1, x[0].shape[1]), fmt='%f')
+            #f.write(f"Input:{x[0].shape[1]}\n")
+            #np.savetxt(f, x[0].detach().cpu().numpy().reshape(-1, x[0].shape[1]), fmt='%f')
             f.write(f"Output:{y.shape[1]}\n")
             np.savetxt(f, y.detach().cpu().numpy().reshape(-1, y.shape[1]), fmt='%f')
             f.write("\n")  # 添加换行以分隔不同的输入输出对
@@ -146,13 +149,17 @@ def val(model, test_loader, device, T):
 
     #对于给定的输入size，查看整个网络模型的输入输出结构
     #summary(model, input_size=[[3, 32, 32]])
-    
-    test_layer = list_modules(model)
+
+    print("注册钩子！")    
     #print(f"NFmodels:{test_layer}\n")
-    
     #print(f"test_layer:{test_layer[0]}\n")
-    print("注册钩子！")
-    hook = test_layer[0].register_forward_hook(save_hook)
+
+    test_layer = list_modules(model)
+    hook = test_layer[3].register_forward_hook(save_hook)
+    
+    for test_layer in list_modules(model):
+        #hook = test_layer.register_forward_hook(save_hook)
+        print(f"threhold:{test_layer.thresh.data}\n")
 
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate((test_loader)):
@@ -165,7 +172,7 @@ def val(model, test_loader, device, T):
             total += float(targets.size(0))
             correct += float(predicted.eq(targets).sum().item())
             #为了便于测试，仅运行一个batchsize就退出
-            #break
+            break
 
         final_acc = 100 * correct / total
     return final_acc
