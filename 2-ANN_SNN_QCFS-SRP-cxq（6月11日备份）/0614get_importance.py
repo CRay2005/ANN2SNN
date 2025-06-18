@@ -299,7 +299,7 @@ class ImprovedHessianWeightImportance:
         
         return pruning_candidates
 
-    def run_full_analysis(self, data_loader, criterion):
+    def run_full_analysis(self, data_loader, criterion, pruning_ratio):
         """运行完整分析"""
         print("="*80)
         print("🚀 全连接层Hessian重要性分析")
@@ -318,7 +318,7 @@ class ImprovedHessianWeightImportance:
             
             # 生成剪枝候选
             print("\n3. 生成剪枝候选...")
-            pruning_candidates = self.get_pruning_candidates(neuron_importance_list)
+            pruning_candidates = self.get_pruning_candidates(neuron_importance_list,pruning_ratio)
             
             total_time = time.time() - start_time
             print(f"\n✅ 分析完成！总耗时: {total_time:.2f}秒")
@@ -438,15 +438,17 @@ def main():
     parser.add_argument('--seed', default=42, type=int, help='随机种子')
     parser.add_argument('--mode', choices=['ann', 'snn'], default='snn', help='模式')
     parser.add_argument('--n_samples', default=200, type=int, help='Hessian采样数量')
-    parser.add_argument('--pruning_ratio', default=0.3, type=float, help='剪枝比例')
+    parser.add_argument('-r','--pruning_ratio', default=0.5, type=float, help='剪枝比例')
     parser.add_argument('--dataset', choices=['cifar10', 'cifar100'], default='cifar10', help='数据集')
     parser.add_argument('--use_double_precision', action='store_true', help='是否使用双精度计算')
+    parser.add_argument('-T','--T', default=8, type=int, help='SNN的阈值')
+    parser.add_argument('-L','--L', default=4, type=int, help='SNN的层数')
     
     args = parser.parse_args()
     
     # 设置输出重定向（默认保存到文件）
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"importance_analysis_{args.mode}_{timestamp}.txt"
+    filename = f"./log/importance_analysis_{args.mode}_{timestamp}.txt"
     output_redirector = OutputRedirector(filename)
     sys.stdout = output_redirector
     print(f"输出将保存到文件: {filename}")
@@ -467,17 +469,7 @@ def main():
     print("创建VGG16模型...")
     model = modelpool('vgg16', args.dataset)
     
-    # 设置模型模式
-    if args.mode == 'snn':
-        model.set_T(8)
-        model.set_L(4)
-        print("设置为SNN模式")
-    else:
-        model.set_T(0)
-        model.set_L(4)
-        print("设置为ANN模式")
-    
-    model.to(device)
+
     
     # 加载预训练模型
     if args.dataset == 'cifar10':
@@ -489,11 +481,32 @@ def main():
     state_dict = torch.load(model_path, map_location=torch.device('cpu'))
     model.load_state_dict(state_dict)
     print("✅ 预训练模型加载成功")
+
+    # 设置模型模式
+    if args.mode == 'snn':
+        model.set_T(args.T)
+        model.set_L(args.L)
+        print("设置为SNN模式")
+    else:
+        model.set_T(0)
+        model.set_L(args.L)
+        print("设置为ANN模式")
+
+
+    model.to(device)
+
+
     
     # 加载数据
     print(f"加载{args.dataset}数据集...")
     train_loader, test_loader = datapool(args.dataset, args.batch_size)
-    
+
+    criterion = nn.CrossEntropyLoss()
+
+    # 剪枝前评估
+    print("\n剪枝前评估:")
+    pre_accuracy, pre_loss = evaluate_model(model, test_loader, criterion, device, args.seed)
+        
     # 创建改进的计算器
     hessian_calc = ImprovedHessianWeightImportance(
         model=model,
@@ -503,8 +516,8 @@ def main():
     )
     
     # 运行分析
-    criterion = nn.CrossEntropyLoss()
-    results = hessian_calc.run_full_analysis(train_loader, criterion)
+
+    results = hessian_calc.run_full_analysis(train_loader, criterion,args.pruning_ratio)
     
     # 获取剪枝候选
     pruning_candidates = results['pruning_candidates']
@@ -521,10 +534,7 @@ def main():
     for layer, count in layer_counts.items():
         print(f"  {layer}: {count} 个神经元")
     
-    # 剪枝前评估
-    print("\n剪枝前评估:")
-    pre_accuracy, pre_loss = evaluate_model(model, test_loader, criterion, device, args.seed)
-    
+
     # 执行剪枝
     prune_neurons(model, pruning_candidates)
     

@@ -43,6 +43,7 @@ def train(model, device, train_loader, criterion, optimizer, T):
     correct = 0
     for i, (images, labels) in enumerate((train_loader)):
         optimizer.zero_grad()
+        model.zero_grad()   #清空梯度,新增加
         labels = labels.to(device)
         images = images.to(device)
         if T > 0:

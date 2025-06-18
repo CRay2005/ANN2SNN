@@ -432,7 +432,7 @@ def main():
     parser.add_argument('--mode', choices=['ann', 'snn'], default='snn', help='模式')
     parser.add_argument('--num_batches', default=5, type=int, help='梯度分析的批次数')
     parser.add_argument('-r','--pruning_ratio', default=0.5, type=float, help='剪枝比例')
-    parser.add_argument('--dataset', choices=['cifar10', 'cifar100'], default='cifar10', help='数据集')
+    parser.add_argument('-data','--dataset', choices=['cifar10', 'cifar100'], default='cifar10', help='数据集')
     parser.add_argument('--order', default='low', type=str, help='low/high 梯度从大到小or从小到大or全部')
     
     args = parser.parse_args()
@@ -464,7 +464,7 @@ def main():
     # 直接加载预训练模型
     model_path = '/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP/cifar10-checkpoints/vgg16_wd[0.0005].pth'
     # model_path = '/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP/cifar100-checkpoints/vgg16_L[4].pth'
-    
+    # model_path = '/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP/cifar100-checkpoints/vgg16_L[4]_cray_double_linear.pth'
     print(f"加载预训练模型: {model_path}")
     state_dict = torch.load(model_path, map_location=torch.device('cpu'))
     model.load_state_dict(state_dict)

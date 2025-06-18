@@ -14,7 +14,7 @@ parser = argparse.ArgumentParser(description='PyTorch Training')
 parser.add_argument('-j','--workers', default=4, type=int,metavar='N',help='number of data loading workers')
 parser.add_argument('-b','--batch_size', default=300, type=int,metavar='N',help='mini-batch size')
 parser.add_argument('--seed', default=42, type=int, help='seed for initializing training. ')
-parser.add_argument('-suffix','--suffix', default='cray_scale_1', type=str,help='suffix')
+parser.add_argument('-suffix','--suffix', default='T4train', type=str,help='suffix')
 parser.add_argument('-T', '--time', default=0, type=int, help='snn simulation time')
 
 # model configuration

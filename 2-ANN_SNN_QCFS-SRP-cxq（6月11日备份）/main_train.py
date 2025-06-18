@@ -19,11 +19,11 @@ parser.add_argument('-T', '--time', default=8, type=int, help='snn simulation ti
 
 # model configuration
 parser.add_argument('-data', '--dataset',default='imagenet',type=str,help='dataset')    #imagenet, cifar10, cifar100
-parser.add_argument('-arch','--model',default='resnet20',type=str,help='model')    #resnet18，resnet20，resnet34，vgg16 
+parser.add_argument('-arch','--model',default='vgg16',type=str,help='model')    #resnet18，resnet20，resnet34，vgg16 
 
 # training configuration
 parser.add_argument('--epochs',default=300,type=int,metavar='N',help='number of total epochs to run')
-parser.add_argument('-lr','--lr',default=0.05,type=float,metavar='LR', help='initial learning rate') # 0.05 for cifar100 / 0.1 for cifar10
+parser.add_argument('-lr','--lr',default=0.1,type=float,metavar='LR', help='initial learning rate') # 0.05 for cifar100 / 0.1 for cifar10
 parser.add_argument('-wd','--weight_decay',default=5e-4, type=float, help='weight_decay')
 parser.add_argument('-dev','--device',default='0',type=str,help='device')
 parser.add_argument('-L', '--L', default=4, type=int, help='Step L')

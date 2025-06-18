@@ -60,13 +60,16 @@ class VGG(nn.Module):
         else:
             self.classifier = nn.Sequential(
                 nn.Flatten(),
+                # nn.Linear(512, 4096*2),
                 nn.Linear(512, 4096),
                 IF(),
                 nn.Dropout(dropout),
+                # nn.Linear(4096*2, 4096*2),
                 nn.Linear(4096, 4096),
                 IF(),
                 nn.Dropout(dropout),
-                nn.Linear(4096, num_classes)
+                # nn.Linear(4096*2, num_classes),
+                nn.Linear(4096, num_classes),
             )
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
