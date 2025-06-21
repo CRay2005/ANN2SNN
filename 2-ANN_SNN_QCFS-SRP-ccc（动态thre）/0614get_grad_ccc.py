@@ -33,7 +33,7 @@ class GradientAnalyzer:
         
     def register_gradient_hooks(self):
         """为所有全连接层注册梯度记录钩子"""
-        print("注册全连接层梯度钩子...")
+        # print("注册全连接层梯度钩子...")
         
         # 移除现有钩子
         for handle in self.gradient_hooks.values():
@@ -50,9 +50,9 @@ class GradientAnalyzer:
                 hook = self._gradient_hook(name)
                 handle = module.weight.register_hook(hook)
                 self.gradient_hooks[name] = handle
-                print(f"  - 注册钩子: {name} (输入={module.in_features}, 输出={module.out_features})")
+                # print(f"  - 注册钩子: {name} (输入={module.in_features}, 输出={module.out_features})")
         
-        print(f"总共注册了 {fc_count} 个全连接层的梯度钩子")
+        # print(f"总共注册了 {fc_count} 个全连接层的梯度钩子")
         
     def _gradient_hook(self, name):
         """创建梯度钩子函数"""
@@ -85,7 +85,7 @@ class GradientAnalyzer:
         返回:
         gradient_stats - 梯度统计信息
         """
-        print(f"\n开始分析 {num_batches} 个批次的梯度分布...")
+        # print(f"\n开始分析 {num_batches} 个批次的梯度分布...")
         
         # 注册梯度钩子
         self.register_gradient_hooks()
@@ -150,7 +150,7 @@ class GradientAnalyzer:
                 gradient_stats[name]['values'] = gradient_stats[name]['values'] / batch_count
         
         # 计算梯度统计
-        print("\n计算梯度统计信息...")
+        # print("\n计算梯度统计信息...")
         for name, stats in gradient_stats.items():
             if stats['values'] is not None:
                 values = np.array(stats['values'])
@@ -168,14 +168,15 @@ class GradientAnalyzer:
         
         return gradient_stats
 
-    def get_low_gradient_neurons(self, gradient_stats,order='low', ratio=0.1):
+    def get_low_gradient_neurons(self, gradient_stats, order='low', ratio=0.1, sort_by='gradient'):
         """
         识别低梯度神经元
         
         参数:
         gradient_stats - analyze_gradients返回的统计数据
-        order - 排序方式: 'low'(梯度从小到大), 'high'(梯度从大到小), 'index'(按神经元序号), 'random'(随机)
+        order - 排序方式: 'low'(从小到大), 'high'(从大到小), 'index'(按神经元序号), 'random'(随机)
         ratio - 要识别的神经元比例
+        sort_by - 排序依据: 'gradient'(按梯度), 'weight'(按权重), 'weight_gradient'(按梯度*权重)
         
         返回:
         low_gradient_neurons - 低梯度神经元列表
@@ -189,30 +190,78 @@ class GradientAnalyzer:
             if 'values' not in stats or stats['values'] is None:
                 continue
                 
-            # 对梯度值排序
+            # 获取梯度值
             grads = np.array(stats['values'])
+            
+            # 根据排序依据选择排序数据
+            if sort_by == 'gradient':
+                sort_data = grads
+            elif sort_by == 'weight':
+                # 获取权重数据
+                for name, module in self.model.named_modules():
+                    if name == layer_name and isinstance(module, nn.Linear):
+                        weight_data = module.weight.data
+                        # 计算每个神经元的平均权重绝对值
+                        sort_data = weight_data.abs().mean(dim=1).cpu().numpy()
+                        break
+                else:
+                    print(f"警告: 未找到层 {layer_name} 的权重数据，使用梯度排序")
+                    sort_data = grads
+            elif sort_by == 'weight_gradient':
+                # 获取权重数据并计算权重*梯度
+                for name, module in self.model.named_modules():
+                    if name == layer_name and isinstance(module, nn.Linear):
+                        weight_data = module.weight.data
+                        # 计算每个神经元的平均权重绝对值
+                        weights = weight_data.abs().mean(dim=1).cpu().numpy()
+                        # 计算权重*梯度
+                        sort_data = weights * grads
+                        break
+                else:
+                    print(f"警告: 未找到层 {layer_name} 的权重数据，使用梯度排序")
+                    sort_data = grads
+            else:
+                print(f"警告: 未知的排序依据 '{sort_by}'，使用梯度排序")
+                sort_data = grads
+            
+            # 根据排序方式对数据进行排序
             if order == 'low':
-                sorted_indices = np.argsort(grads)  # 从小到大排序
+                sorted_indices = np.argsort(sort_data)  # 从小到大排序
             elif order == 'high':
-                sorted_indices = np.argsort(grads)[::-1]  # 从大到小排序
+                sorted_indices = np.argsort(sort_data)[::-1]  # 从大到小排序
             elif order == 'index':
-                sorted_indices = np.arange(len(grads))  # 按神经元序号排序
+                sorted_indices = np.arange(len(sort_data))  # 按神经元序号排序
             elif order == 'random':
                 # 随机打乱索引
-                sorted_indices = np.random.permutation(len(grads))
+                sorted_indices = np.random.permutation(len(sort_data))
             else:
-                # 默认按梯度从小到大排序
-                sorted_indices = np.argsort(grads)
+                # 默认按从小到大排序
+                sorted_indices = np.argsort(sort_data)
             
-            # 计算低梯度阈值
-            num_low = int(len(grads) * ratio)
+            # 计算要选择的神经元数量
+            num_select = int(len(sort_data) * ratio)
             
-            # 收集低梯度神经元
-            for idx in sorted_indices[:num_low]:
+            # 收集神经元信息
+            for idx in sorted_indices[:num_select]:
+                # 获取权重信息
+                weight_info = 0.0
+                for name, module in self.model.named_modules():
+                    if name == layer_name and isinstance(module, nn.Linear):
+                        weight_data = module.weight.data
+                        weight_info = weight_data.abs().mean(dim=1).cpu().numpy()[idx]
+                        break
+                
+                # 计算权重*梯度
+                weight_gradient = weight_info * grads[idx]
+                
                 low_neurons.append({
                     'layer': layer_name,
                     'neuron_index': idx,
                     'grad_value': grads[idx],
+                    'weight_value': weight_info,
+                    'weight_gradient_value': weight_gradient,
+                    'sort_value': sort_data[idx],  # 用于排序的值
+                    'sort_by': sort_by,  # 排序依据
                     'grad_percentile': (np.searchsorted(np.sort(grads), grads[idx]) + 1) / len(grads)
                 })
         
@@ -220,9 +269,9 @@ class GradientAnalyzer:
 
     def print_gradient_analysis(self, gradient_stats):
         """打印梯度分析结果"""
-        print("="*80)
-        print("全连接层梯度分布分析")
-        print("="*80)
+        # print("="*80)
+        # print("全连接层梯度分布分析")
+        # print("="*80)
         
         if not gradient_stats:
             print("没有收集到梯度数据")
@@ -232,25 +281,25 @@ class GradientAnalyzer:
             if 'values' not in stats or stats['values'] is None:
                 continue
                 
-            print(f"\n层: {layer_name}")
-            print(f"  神经元数量: {stats['num_neurons']:,}")
-            print(f"  梯度统计:")
-            print(f"    均值: {stats['mean']:.8f}")
-            print(f"    标准差: {stats['std']:.8f}")
-            print(f"    最小值: {stats['min']:.8f}")
-            print(f"    最大值: {stats['max']:.8f}")
-            print(f"    中位数: {stats['median']:.8f}")
-            print(f"  梯度分布:")
-            print(f"    25%分位数: {stats['p25']:.8f}")
-            print(f"    75%分位数: {stats['p75']:.8f}")
-            print(f"    95%分位数: {stats['p95']:.8f}")
-            print("-"*60)
+            # print(f"\n层: {layer_name}")
+            # print(f"  神经元数量: {stats['num_neurons']:,}")
+            # print(f"  梯度统计:")
+            # print(f"    均值: {stats['mean']:.8f}")
+            # print(f"    标准差: {stats['std']:.8f}")
+            # print(f"    最小值: {stats['min']:.8f}")
+            # print(f"    最大值: {stats['max']:.8f}")
+            # print(f"    中位数: {stats['median']:.8f}")
+            # print(f"  梯度分布:")
+            # print(f"    25%分位数: {stats['p25']:.8f}")
+            # print(f"    75%分位数: {stats['p75']:.8f}")
+            # print(f"    95%分位数: {stats['p95']:.8f}")
+            # print("-"*60)
         
         # 分析低梯度神经元
-        print("\n低梯度神经元分析:")
+        # print("\n低梯度神经元分析:")
         for ratio in [0.05, 0.1, 0.2]:
             low_neurons = self.get_low_gradient_neurons(gradient_stats,'low', ratio)
-            print(f"  梯度最低 {ratio*100:.1f}% 的神经元数量: {len(low_neurons)}")
+            # print(f"  梯度最低 {ratio*100:.1f}% 的神经元数量: {len(low_neurons)}")
             
             if low_neurons:
                 # 按层分组统计
@@ -262,9 +311,10 @@ class GradientAnalyzer:
                     layer_counts[layer] += 1
                 
                 for layer, count in layer_counts.items():
-                    print(f"    {layer}: {count} 个")
+                    # print(f"    {layer}: {count} 个")
+                    pass
         
-        print("="*80)
+        # print("="*80)
     
     def prune_neurons(self, neurons_to_prune):
         """执行神经元剪枝"""
@@ -295,10 +345,10 @@ class GradientAnalyzer:
                         module.bias.data[neuron_idx] = 0
         
         # 打印每层剪枝统计信息
-        print("\n剪枝统计信息:")
-        print("="*60)
-        print(f"{'层名称':<30} {'剪枝神经元数量':<15} {'总神经元数量':<15}")
-        print("-"*60)
+        # print("\n剪枝统计信息:")
+        # print("="*60)
+        # print(f"{'层名称':<30} {'剪枝神经元数量':<15} {'总神经元数量':<15}")
+        # print("-"*60)
         
         total_pruned = 0
         for layer_name, count in layer_prune_count.items():
@@ -306,13 +356,13 @@ class GradientAnalyzer:
             for name, module in self.model.named_modules():
                 if name == layer_name and isinstance(module, nn.Linear):
                     total_neurons = module.out_features
-                    print(f"{layer_name:<30} {count:<15} {total_neurons:<15}")
+                    # print(f"{layer_name:<30} {count:<15} {total_neurons:<15}")
                     total_pruned += count
                     break
         
-        print("-"*60)
-        print(f"总计剪枝神经元数量: {total_pruned}")
-        print("="*60)
+        # print("-"*60)
+        # print(f"总计剪枝神经元数量: {total_pruned}")
+        # print("="*60)
     
     def cleanup_hooks(self):
         """清理梯度钩子"""
@@ -332,7 +382,7 @@ class GradientAnalyzer:
         timestamp - 时间戳
         before_pruning_state - 剪枝前的模型状态
         """
-        print("\n开始保存权重分析信息...")
+        # print("\n开始保存权重分析信息...")
         
         # 确保log目录存在
         log_dir = "log_weight_grad"
@@ -343,7 +393,7 @@ class GradientAnalyzer:
         # 遍历所有全连接层
         for name, module in model.named_modules():
             if isinstance(module, nn.Linear):
-                print(f"分析层: {name}")
+                # print(f"分析层: {name}")
                 
                 # 获取剪枝后的权重数据
                 weight_data = module.weight.data
@@ -465,7 +515,7 @@ def evaluate_model(model, test_loader, criterion, device, seed=42):
     avg_accuracy = 100 * total_correct / total_samples
     avg_loss = total_loss / len(test_loader)
     # print(f"\n评估完成:")
-    print(f"  总样本数: {total_samples}")
+    # print(f"  总样本数: {total_samples}")
     print(f"  平均准确率: {avg_accuracy:.2f}% ({total_correct}/{total_samples})")
     print(f"  平均损失: {avg_loss:.6f}")
     
@@ -488,15 +538,17 @@ def main():
     parser.add_argument('--num_batches', default=5, type=int, help='梯度分析的批次数')
     parser.add_argument('-r','--pruning_ratio', default=0.5, type=float, help='剪枝比例')
     parser.add_argument('--dataset', choices=['cifar10', 'cifar100'], default='cifar10', help='数据集')
-    parser.add_argument('--order', default='random', type=str, help='low/high/index/random 梯度从小到大/从大到小/按神经元序号/随机排序')
+    parser.add_argument('--order', default='low', type=str, help='low/high/index/random 从小到大/从大到小/按神经元序号/随机排序')
+    parser.add_argument('--sort_by', default='weight', type=str, choices=['gradient', 'weight', 'weight_gradient'], 
+                       help='排序依据: gradient(按梯度), weight(按权重), weight_gradient(按梯度*权重)')
     
     args = parser.parse_args()
     
     # 设置输出重定向（默认保存到文件）
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"gradient_analysis_{args.mode}_{timestamp}.txt"
-    output_redirector = OutputRedirector(filename)
-    sys.stdout = output_redirector
+    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # filename = f"gradient_analysis_{args.mode}_{timestamp}.txt"
+    # output_redirector = OutputRedirector(filename)
+    # sys.stdout = output_redirector
     # print(f"输出将保存到文件: {filename}")
     
     # 设置环境
@@ -507,9 +559,10 @@ def main():
     # print(f"设备: {device}, 随机种子: {args.seed}")
     # print(f"分析模式: {args.mode}")
     # print(f"梯度分析批次数: {args.num_batches}")
-    print(f"剪枝比例: {args.pruning_ratio}")
+    # print(f"剪枝比例: {args.pruning_ratio}")
     # print(f"数据集: {args.dataset}")
-    print(f"梯度排序方式: {args.order}")
+    # print(f"排序方式: {args.order}")
+    # print(f"排序依据: {args.sort_by}")
     
     # 创建模型
     model = modelpool('vgg16', args.dataset)
@@ -532,7 +585,7 @@ def main():
     # print("✅ 预训练模型加载成功")
     
     if args.mode == 'snn':
-        model.set_T(4)
+        model.set_T(8)
         model.set_L(4)
         # print("设置为SNN模式")
     else:
@@ -559,9 +612,9 @@ def main():
     pre_accuracy, pre_loss = evaluate_model(model, test_loader, criterion, device, args.seed)
     
     # 分析全连接层梯度
-    print("\n" + "="*80)
-    print("开始全连接层梯度分析")
-    print("="*80)
+    # print("\n" + "="*80)
+    # print("开始全连接层梯度分析")
+    # print("="*80)
     
     # 创建梯度分析器
     analyzer = GradientAnalyzer(model)
@@ -579,7 +632,8 @@ def main():
         low_gradient_neurons = analyzer.get_low_gradient_neurons(
             gradient_stats, 
             order=args.order,
-            ratio=args.pruning_ratio
+            ratio=args.pruning_ratio,
+            sort_by=args.sort_by
         )
         
         # 执行剪枝
@@ -616,12 +670,12 @@ def main():
                   
     finally:
         # 保存权重分析信息
-        analyzer.save_neuronidx_weight_grad(model, gradient_stats, timestamp, initial_state)
+        # analyzer.save_neuronidx_weight_grad(model, gradient_stats, timestamp, initial_state)
         
         # 清理梯度钩子
         analyzer.cleanup_hooks()
     
-    print("\n✅ 完成!")
+    # print("\n✅ 完成!")
 
 if __name__ == "__main__":
     main() 

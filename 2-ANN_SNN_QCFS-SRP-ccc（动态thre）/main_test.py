@@ -9,7 +9,7 @@ from Models import modelpool
 from Preprocess import datapool
 from utils import train, val, seed_all, get_logger
 from Models.layer import *
-from Models.layer import load_model_compatible
+# from Models.layer import load_model_compatible
 import pandas as pd
 
 # 设置环境变量抑制cuDNN警告
@@ -29,7 +29,7 @@ parser.add_argument('--seed',default=42,type=int,help='seed for initializing tra
 parser.add_argument('-suffix','--suffix',default='', type=str,help='suffix')
 
 # model configuration
-parser.add_argument('-data', '--dataset',default='cifar100',type=str,help='dataset')    #imagenet, cifar10, cifar100
+parser.add_argument('-data', '--dataset',default='cifar10',type=str,help='dataset')    #imagenet, cifar10, cifar100
 parser.add_argument('-arch','--model',default='vgg16',type=str,help='model')    #resnet18，resnet20，resnet34，vgg16 
 parser.add_argument('-id', '--identifier', type=str,help='model statedict identifier')
 
@@ -63,13 +63,13 @@ def main():
         elif "up" in k:
             state_dict[k[:-2]+'thresh'] = state_dict.pop(k)
     
-    # model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict)
     # 使用兼容性加载函数
-    try:
-        load_model_compatible(model, state_dict)
-    except Exception as e:
-        print(f"兼容性加载失败，尝试常规加载: {e}")
-        model.load_state_dict(state_dict, strict=False)  # 使用非严格模式作为备选
+    # try:
+    #     load_model_compatible(model, state_dict)
+    # except Exception as e:
+    #     print(f"兼容性加载失败，尝试常规加载: {e}")
+    #     model.load_state_dict(state_dict, strict=False)  # 使用非严格模式作为备选
 
     model.to(device)
     model.set_T(args.time)
@@ -80,35 +80,35 @@ def main():
     # acc = val(model, test_loader, device, args.time, optimize_thre_flag=True)
 
     # 读取阈值文件并设置给IF层
-    if_count = 0
-    for name, module in model.named_modules():
-        if isinstance(module, IF):
-            # 构建阈值文件路径
-            thre_file = f'/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP-ccc（动态thre）/log/IF_{if_count}_thresholds_stats.csv'
+    # if_count = 0
+    # for name, module in model.named_modules():
+    #     if isinstance(module, IF):
+    #         # 构建阈值文件路径
+    #         thre_file = f'/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP-ccc（动态thre）/log/IF_{if_count}_thresholds_stats.csv'
             
-            if os.path.exists(thre_file):
-                # 读取CSV文件
-                thre_df = pd.read_csv(thre_file)
+    #         if os.path.exists(thre_file):
+    #             # 读取CSV文件
+    #             thre_df = pd.read_csv(thre_file)
                 
-                # 设置阈值 - 根据通道数自动判断
-                threshold_values = thre_df['50分位'].values if len(thre_df) > 1 else [thre_df['50分位'].mean()]
+    #             # 设置阈值 - 根据通道数自动判断
+    #             threshold_values = thre_df['50分位'].values if len(thre_df) > 1 else [thre_df['50分位'].mean()]
                 
-                # 统一创建tensor
-                module.neuron_thre = torch.tensor(
-                    threshold_values,
-                    dtype=module.thresh.dtype,
-                    device=module.thresh.device
-                )
+    #             # 统一创建tensor
+    #             module.neuron_thre = torch.tensor(
+    #                 threshold_values,
+    #                 dtype=module.thresh.dtype,
+    #                 device=module.thresh.device
+    #             )
                 
-                # 打印信息
-                layer_type = "卷积" if len(threshold_values) > 1 else "全连接"
-                print(f"已成功设置第{if_count}层{layer_type}IF的{len(threshold_values)}个通道的阈值")
-            else:
-                # 如果文件不存在，使用原有thresh
-                module.neuron_thre = module.thresh.clone()
-                # print(f"已设置层 {name} 的阈值为原有thresh值: {module.thresh.item():.6f}")
+    #             # 打印信息
+    #             layer_type = "卷积" if len(threshold_values) > 1 else "全连接"
+    #             print(f"已成功设置第{if_count}层{layer_type}IF的{len(threshold_values)}个通道的阈值")
+    #         else:
+    #             # 如果文件不存在，使用原有thresh
+    #             module.neuron_thre = module.thresh.clone()
+    #             # print(f"已设置层 {name} 的阈值为原有thresh值: {module.thresh.item():.6f}")
             
-            if_count += 1
+    #         if_count += 1
     
     # 测试模型
     print("开始测试模型...")

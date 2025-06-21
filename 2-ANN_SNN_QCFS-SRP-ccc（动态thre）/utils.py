@@ -66,9 +66,9 @@ def val(model, test_loader, device, T,optimize_thre_flag=False):
     total = 0
     model.eval()
 
-    for m in model.modules():
-        if isinstance(m, IF):
-            m.optimize_thre_flag = optimize_thre_flag
+    # for m in model.modules():
+    #     if isinstance(m, IF):
+    #         m.optimize_thre_flag = optimize_thre_flag
 
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate((test_loader)):
@@ -81,21 +81,21 @@ def val(model, test_loader, device, T,optimize_thre_flag=False):
             total += float(targets.size(0))
             correct += float(predicted.eq(targets).sum().item())
 
-            # 采集最优thre，运行指定batchsize就退出
-            if optimize_thre_flag and batch_idx == 1:
-                # 保存每个IF层的阈值数据
-                if_count = 0  # 用于记录IF层的索引
-                for m in model.modules():
-                    if isinstance(m, IF):
-                        os.makedirs('log', exist_ok=True)
-                        # 为每个IF层创建独立的CSV文件
-                        save_path = os.path.join('log', f'IF_{if_count}_thresholds.csv')
-                        m.save_thresholds_to_csv(save_path)
-                        if_count += 1
-                print("保存每个IF层的阈值数据完成！")
-                # print(f"batch:{batch_idx}")
-                # print(f"final_acc:{100 * correct / total}")
-                break
+            # # 采集最优thre，运行指定batchsize就退出
+            # if optimize_thre_flag and batch_idx == 1:
+            #     # 保存每个IF层的阈值数据
+            #     if_count = 0  # 用于记录IF层的索引
+            #     for m in model.modules():
+            #         if isinstance(m, IF):
+            #             os.makedirs('log', exist_ok=True)
+            #             # 为每个IF层创建独立的CSV文件
+            #             save_path = os.path.join('log', f'IF_{if_count}_thresholds.csv')
+            #             m.save_thresholds_to_csv(save_path)
+            #             if_count += 1
+            #     print("保存每个IF层的阈值数据完成！")
+            #     # print(f"batch:{batch_idx}")
+            #     # print(f"final_acc:{100 * correct / total}")
+            #     break
 
         final_acc = 100 * correct / total
     return final_acc

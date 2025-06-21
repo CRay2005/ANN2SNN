@@ -131,7 +131,7 @@ class IF(nn.Module):
     
     def forward(self, x):
         if self.T > 0:
-            thre = self.thresh  # 保持梯度连接，不使用.data
+            thre = self.thresh*1.2  # 保持梯度连接，不使用.data
             x = self.expand(x)
             mem = 0.5 * thre  # 初始化膜电位
             spike_pot = []
