@@ -12,53 +12,17 @@ from Models import modelpool
 from Preprocess import datapool
 from utils import seed_all
 import pandas as pd
+import warnings
+# from Models.layer import load_model_compatible
 
-def get_params_grad(model):
-    """
-    获取模型参数和对应的梯度
-    参考自hessian_weight_importance.py
-    """
-    params = []
-    grads = []
-    for param in model.parameters():
-        if not param.requires_grad:
-            continue
-        params.append(param)
-        grads.append(0. if param.grad is None else param.grad + 0.)
-    return params, grads
+# 设置环境变量抑制cuDNN警告
+os.environ['CUDNN_V8_API_DISABLED'] = '1'
+warnings.filterwarnings("ignore", category=UserWarning)
+# 抑制PyTorch相关警告
+import torch.backends.cudnn as cudnn
+cudnn.benchmark = True
+torch.backends.cudnn.deterministic = False
 
-def print_all_if_module_info(model):
-    """打印所有IF模块的详细信息"""
-    print("="*80)
-    print("IF模块详细信息")
-    print("="*80)
-    
-    from Models.layer import IF
-    
-    if_module_count = 0
-    for name, module in model.named_modules():
-        if isinstance(module, IF):
-            if_module_count += 1
-            print(f"IF模块: {name}")
-            print(f"  阈值(thresh): {module.thresh.item():.6f}")
-            print(f"  gamma参数: {module.gama}")
-            print(f"  时间步数(T): {module.T}")
-            print(f"  量化级别(L): {module.L}")
-            
-            # 打印阈值参数的梯度
-            if module.thresh.grad is not None:
-                thresh_grad = module.thresh.grad.item()
-                print(f"  阈值梯度: {thresh_grad:.6f}")
-            else:
-                print(f"  阈值梯度: None")
-            
-            print("-"*60)
-    
-    if if_module_count == 0:
-        print("未找到IF模块")
-    else:
-        print(f"总共找到 {if_module_count} 个IF模块")
-    print("="*80)
 
 class GradientAnalyzer:
     """全连接层梯度分析器"""
@@ -210,6 +174,7 @@ class GradientAnalyzer:
         
         参数:
         gradient_stats - analyze_gradients返回的统计数据
+        order - 排序方式: 'low'(梯度从小到大), 'high'(梯度从大到小), 'index'(按神经元序号), 'random'(随机)
         ratio - 要识别的神经元比例
         
         返回:
@@ -228,8 +193,16 @@ class GradientAnalyzer:
             grads = np.array(stats['values'])
             if order == 'low':
                 sorted_indices = np.argsort(grads)  # 从小到大排序
-            else:
+            elif order == 'high':
                 sorted_indices = np.argsort(grads)[::-1]  # 从大到小排序
+            elif order == 'index':
+                sorted_indices = np.arange(len(grads))  # 按神经元序号排序
+            elif order == 'random':
+                # 随机打乱索引
+                sorted_indices = np.random.permutation(len(grads))
+            else:
+                # 默认按梯度从小到大排序
+                sorted_indices = np.argsort(grads)
             
             # 计算低梯度阈值
             num_low = int(len(grads) * ratio)
@@ -256,7 +229,7 @@ class GradientAnalyzer:
             return
         
         for layer_name, stats in gradient_stats.items():
-            if not stats.get('values'):
+            if 'values' not in stats or stats['values'] is None:
                 continue
                 
             print(f"\n层: {layer_name}")
@@ -348,6 +321,88 @@ class GradientAnalyzer:
         self.gradient_hooks = {}
         self.gradient_records = {}
 
+
+    def save_neuronidx_weight_grad(self, model, gradient_stats, timestamp, before_pruning_state=None):
+        """
+        保存权重分析信息到CSV文件
+        
+        参数:
+        model - 模型
+        gradient_stats - 梯度统计信息
+        timestamp - 时间戳
+        before_pruning_state - 剪枝前的模型状态
+        """
+        print("\n开始保存权重分析信息...")
+        
+        # 确保log目录存在
+        log_dir = "log_weight_grad"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+            print(f"创建目录: {log_dir}")
+        
+        # 遍历所有全连接层
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Linear):
+                print(f"分析层: {name}")
+                
+                # 获取剪枝后的权重数据
+                weight_data = module.weight.data
+                out_features, in_features = weight_data.shape
+                
+                # 计算剪枝后的平均权重
+                pruned_weights = weight_data.abs().mean(dim=1).cpu().numpy()
+                
+                # 获取剪枝前的平均权重
+                if before_pruning_state is not None and f"{name}.weight" in before_pruning_state:
+                    before_weight_data = before_pruning_state[f"{name}.weight"]
+                    avg_befor_weights = before_weight_data.abs().mean(dim=1).cpu().numpy()
+                else:
+                    # 如果没有剪枝前状态，抛出异常
+                    raise ValueError(f"层 {name} 没有剪枝前状态信息，无法保存权重分析数据")
+                
+                # 获取对应的梯度值
+                if name not in gradient_stats or gradient_stats[name]['values'] is None:
+                    raise ValueError(f"层 {name} 没有梯度信息，无法保存权重分析数据")
+                
+                gradient_values = gradient_stats[name]['values']
+                
+                # 创建DataFrame
+                df = pd.DataFrame({
+                    'neuron_index': range(out_features),
+                    'avg_befor_weight': avg_befor_weights,
+                    'pruned_weight': pruned_weights,
+                    'gradient_value': gradient_values
+                })
+                
+                # 生成文件名（简化格式）
+                filename = f"{name}_weight_grad_{timestamp}.csv"
+                filepath = os.path.join(log_dir, filename)
+                
+                # 保存到CSV
+                df.to_csv(filepath, index=False)
+        #         print(f"  已保存权重信息到: {filepath}")
+        #         print(f"  神经元数量: {out_features}")
+        #         print(f"  剪枝前权重统计:")
+        #         print(f"    均值: {np.mean(avg_befor_weights):.8f}")
+        #         print(f"    标准差: {np.std(avg_befor_weights):.8f}")
+        #         print(f"    最小值: {np.min(avg_befor_weights):.8f}")
+        #         print(f"    最大值: {np.max(avg_befor_weights):.8f}")
+        #         print(f"    中位数: {np.median(avg_befor_weights):.8f}")
+        #         print(f"  剪枝后权重统计:")
+        #         print(f"    均值: {np.mean(pruned_weights):.8f}")
+        #         print(f"    标准差: {np.std(pruned_weights):.8f}")
+        #         print(f"    最小值: {np.min(pruned_weights):.8f}")
+        #         print(f"    最大值: {np.max(pruned_weights):.8f}")
+        #         print(f"    中位数: {np.median(pruned_weights):.8f}")
+        #         print(f"  梯度值统计:")
+        #         print(f"    均值: {np.mean(gradient_values):.8f}")
+        #         print(f"    标准差: {np.std(gradient_values):.8f}")
+        #         print(f"    最小值: {np.min(gradient_values):.8f}")
+        #         print(f"    最大值: {np.max(gradient_values):.8f}")
+        #         print(f"    中位数: {np.median(gradient_values):.8f}")
+        
+        # print("权重分析信息保存完成!")
+
 class OutputRedirector:
     """输出重定向器，同时输出到控制台和文件"""
     def __init__(self, filename):
@@ -409,7 +464,7 @@ def evaluate_model(model, test_loader, criterion, device, seed=42):
     # 计算平均准确率和损失
     avg_accuracy = 100 * total_correct / total_samples
     avg_loss = total_loss / len(test_loader)
-    print(f"\n评估完成:")
+    # print(f"\n评估完成:")
     print(f"  总样本数: {total_samples}")
     print(f"  平均准确率: {avg_accuracy:.2f}% ({total_correct}/{total_samples})")
     print(f"  平均损失: {avg_loss:.6f}")
@@ -433,7 +488,7 @@ def main():
     parser.add_argument('--num_batches', default=5, type=int, help='梯度分析的批次数')
     parser.add_argument('-r','--pruning_ratio', default=0.5, type=float, help='剪枝比例')
     parser.add_argument('--dataset', choices=['cifar10', 'cifar100'], default='cifar10', help='数据集')
-    parser.add_argument('--order', default='low', type=str, help='low/high 梯度从大到小or从小到大or全部')
+    parser.add_argument('--order', default='random', type=str, help='low/high/index/random 梯度从小到大/从大到小/按神经元序号/随机排序')
     
     args = parser.parse_args()
     
@@ -442,54 +497,62 @@ def main():
     filename = f"gradient_analysis_{args.mode}_{timestamp}.txt"
     output_redirector = OutputRedirector(filename)
     sys.stdout = output_redirector
-    print(f"输出将保存到文件: {filename}")
+    # print(f"输出将保存到文件: {filename}")
     
     # 设置环境
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed_all(args.seed)
     
-    print(f"设备: {device}, 随机种子: {args.seed}")
-    print(f"分析模式: {args.mode}")
-    print(f"梯度分析批次数: {args.num_batches}")
+    # print(f"设备: {device}, 随机种子: {args.seed}")
+    # print(f"分析模式: {args.mode}")
+    # print(f"梯度分析批次数: {args.num_batches}")
     print(f"剪枝比例: {args.pruning_ratio}")
-    print(f"数据集: {args.dataset}")
+    # print(f"数据集: {args.dataset}")
     print(f"梯度排序方式: {args.order}")
     
     # 创建模型
-    print("创建VGG16模型...")
-    # model = modelpool('vgg16', 'cifar10')
     model = modelpool('vgg16', args.dataset)
     
     # 直接加载预训练模型
     model_path = '/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP/cifar10-checkpoints/vgg16_wd[0.0005].pth'
     # model_path = '/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP/cifar100-checkpoints/vgg16_L[4].pth'
     
-    print(f"加载预训练模型: {model_path}")
+    # print(f"加载预训练模型: {model_path}")
     state_dict = torch.load(model_path, map_location=torch.device('cpu'))
+
     model.load_state_dict(state_dict)
-    print("✅ 预训练模型加载成功")
+    # 使用兼容性加载函数
+    # try:
+    #     load_model_compatible(model, state_dict)
+    # except Exception as e:
+    #     print(f"兼容性加载失败，尝试常规加载: {e}")
+    #     model.load_state_dict(state_dict, strict=False)  # 使用非严格模式作为备选
+
+    # print("✅ 预训练模型加载成功")
     
     if args.mode == 'snn':
-        model.set_T(8)
+        model.set_T(4)
         model.set_L(4)
-        print("设置为SNN模式")
+        # print("设置为SNN模式")
     else:
         model.set_T(0)
         model.set_L(4)
-        print("设置为ANN模式")
+        # print("设置为ANN模式")
     
     model.to(device)
     
     # 加载数据
-    print(f"加载{args.dataset}测试数据集...")
+    # print(f"加载{args.dataset}测试数据集...")
     train_loader, test_loader = datapool(args.dataset, args.batch_size)
     
     # 使用测试集进行评估
     criterion = nn.CrossEntropyLoss()
     
-    # 保存模型初始状态
-    initial_state = model.state_dict().copy()
+    # 保存模型初始状态（深拷贝）
+    initial_state = {}
+    for key, value in model.state_dict().items():
+        initial_state[key] = value.clone().detach()
     
     # 剪枝前评估
     print("\n剪枝前评估:")
@@ -510,6 +573,7 @@ def main():
             criterion, 
             num_batches=args.num_batches
         )
+        # analyzer.print_gradient_analysis(gradient_stats)    
         
         # 获取低梯度神经元
         low_gradient_neurons = analyzer.get_low_gradient_neurons(
@@ -541,16 +605,19 @@ def main():
                 'gradient_value': stats['values']
             })
             
-            # # 生成文件名
+            # 生成文件名
             # filename = f"gradient_analysis_{layer_name}_{timestamp}.csv"
             
-            # # 保存到CSV
+            # 保存到CSV
             # df.to_csv(filename, index=False)
             # print(f"已保存{layer_name}层的梯度信息到: {filename}")
-            print(f"  神经元数量: {num_neurons}")
-            print(f"  每个神经元包含1个平均梯度值")
+            # print(f"  神经元数量: {num_neurons}")
+            # print(f"  每个神经元包含1个平均梯度值")
                   
     finally:
+        # 保存权重分析信息
+        analyzer.save_neuronidx_weight_grad(model, gradient_stats, timestamp, initial_state)
+        
         # 清理梯度钩子
         analyzer.cleanup_hooks()
     

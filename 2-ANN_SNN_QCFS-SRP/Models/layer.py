@@ -56,7 +56,7 @@ myfloor = GradFloor.apply
 class SurrogateSpike(torch.autograd.Function):
     """自定义代理梯度脉冲函数（参考gradient_cray.py的设计思路）"""
     @staticmethod
-    def forward(ctx, mem_pot, threshold, surrogate_grad='arctan', scale=5.0):
+    def forward(ctx, mem_pot, threshold, surrogate_grad='arctan', scale=1.0):
         # 计算脉冲
         spike = (mem_pot >= threshold).float()
         

@@ -18,8 +18,8 @@ parser.add_argument('--seed',default=42,type=int,help='seed for initializing tra
 parser.add_argument('-suffix','--suffix',default='', type=str,help='suffix')
 
 # model configuration
-parser.add_argument('-data', '--dataset',default='cifar100',type=str,help='dataset')
-parser.add_argument('-arch','--model',default='vgg16',type=str,help='model')
+parser.add_argument('-data', '--dataset',default='cifar100',type=str,help='dataset')    #imagenet, cifar10, cifar100
+parser.add_argument('-arch','--model',default='resnet20',type=str,help='model')    #resnet18，resnet20，resnet34，vgg16 
 parser.add_argument('-id', '--identifier', type=str,help='model statedict identifier')
 
 # test configuration

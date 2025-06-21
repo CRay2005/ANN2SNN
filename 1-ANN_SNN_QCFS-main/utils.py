@@ -150,16 +150,16 @@ def val(model, test_loader, device, T):
     #对于给定的输入size，查看整个网络模型的输入输出结构
     #summary(model, input_size=[[3, 32, 32]])
 
-    print("注册钩子！")    
+    # print("注册钩子！")    
     #print(f"NFmodels:{test_layer}\n")
     #print(f"test_layer:{test_layer[0]}\n")
 
-    test_layer = list_modules(model)
-    hook = test_layer[3].register_forward_hook(save_hook)
+    # test_layer = list_modules(model)
+    # hook = test_layer[3].register_forward_hook(save_hook)
     
-    for test_layer in list_modules(model):
-        #hook = test_layer.register_forward_hook(save_hook)
-        print(f"threhold:{test_layer.thresh.data}\n")
+    # for test_layer in list_modules(model):
+    #     #hook = test_layer.register_forward_hook(save_hook)
+    #     print(f"threhold:{test_layer.thresh.data}\n")
 
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate((test_loader)):
@@ -172,7 +172,7 @@ def val(model, test_loader, device, T):
             total += float(targets.size(0))
             correct += float(predicted.eq(targets).sum().item())
             #为了便于测试，仅运行一个batchsize就退出
-            break
+            # break
 
         final_acc = 100 * correct / total
     return final_acc

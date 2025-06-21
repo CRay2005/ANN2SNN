@@ -129,8 +129,6 @@ class IF(nn.Module):
         self.scale = scale                    # 代理梯度缩放因子
         self.surrogate_spike = SurrogateSpike.apply  # 自定义代理梯度函数 
     
-
-
     def forward(self, x):
         if self.T > 0:
             thre = self.thresh  # 保持梯度连接，不使用.data
@@ -138,7 +136,7 @@ class IF(nn.Module):
             mem = 0.5 * thre  # 初始化膜电位
             spike_pot = []
             
-            # QCFC处理 - 使用模拟梯度技巧============================================
+            # QCFC处理 - 使用模拟梯度============================================
                         
             for t in range(self.T):
                 mem = mem + x[t, ...]

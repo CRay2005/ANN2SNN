@@ -78,8 +78,8 @@ class ResNet(nn.Module):
         for module in self.modules():
             if isinstance(module, (IF, ExpandTemporalDim)):
                 module.T = T
-            if isinstance(module, IF):
-                print(module.thresh)
+            # if isinstance(module, IF):
+            #     print(module.thresh)
         return
 
     def set_L(self, L):
