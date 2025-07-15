@@ -67,42 +67,8 @@ def print_params_and_gradients(model):
     print(f"\n总结: {total_params:,} 个参数, 总梯度范数: {total_grad_norm:.6f}")
     print("="*80)
 
-def print_if_layers_only(model):
-    """只打印IF层的参数和梯度信息"""
-    print("="*80)
-    print("IF层阈值参数和梯度信息")
-    print("="*80)
-    
-    if_layer_count = 0
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        
-        # 只显示IF层的阈值参数
-        if 'thresh' in name.lower() and param.numel() == 1:
-            if_layer_count += 1
-            print(f"IF层阈值: {name}")
-            print(f"  形状: {list(param.shape)}, 参数数量: {param.numel():,}")
-            print(f"  阈值: {param.data.item():.6f}")
-            
-            if param.grad is not None:
-                grad_norm = param.grad.norm().item()
-                grad_mean = param.grad.mean().item()
-                grad_value = param.grad.data.item()
-                print(f"  梯度值: {grad_value:.6f}")
-                print(f"  梯度范数: {grad_norm:.6f}, 梯度均值: {grad_mean:.6f}")
-            else:
-                print(f"  梯度: None")
-            print("-"*60)
-    
-    if if_layer_count == 0:
-        print("未找到IF层阈值参数")
-    else:
-        print(f"总共找到 {if_layer_count} 个IF层阈值参数")
-    print("="*80)
-
-def print_all_if_module_info(model):
-    """打印所有IF模块的详细信息"""
+def print_if_module_info(model):
+    """打印所有IF模块的详细信息，包括阈值参数和梯度信息"""
     print("="*80)
     print("IF模块详细信息")
     print("="*80)
@@ -110,14 +76,16 @@ def print_all_if_module_info(model):
     from Models.layer import IF
     
     if_module_count = 0
+    
+    # 通过模块查找IF层
     for name, module in model.named_modules():
         if isinstance(module, IF):
             if_module_count += 1
             print(f"IF模块: {name}")
             print(f"  阈值(thresh): {module.thresh.item():.6f}")
-            print(f"  gamma参数: {module.gama}")
-            print(f"  时间步数(T): {module.T}")
-            print(f"  量化级别(L): {module.L}")
+            # print(f"  gamma参数: {module.gama}")
+            # print(f"  时间步数(T): {module.T}")
+            # print(f"  量化级别(L): {module.L}")
             
             # 打印阈值参数的梯度
             if module.thresh.grad is not None:
@@ -128,10 +96,383 @@ def print_all_if_module_info(model):
             
             print("-"*60)
     
+    # 总结
     if if_module_count == 0:
         print("未找到IF模块")
     else:
         print(f"总共找到 {if_module_count} 个IF模块")
+    print("="*80)
+
+def new_print_if_module_info(model):
+    """打印所有IF模块的详细信息，包括输入梯度和输出梯度"""
+    print("="*80)
+    print("IF模块详细信息（包含输入输出梯度）")
+    print("="*80)
+    
+    from Models.layer import IF
+    
+    if_module_count = 0
+    
+    # 存储梯度信息的字典
+    gradient_info = {}
+    
+    # 为每个IF层注册钩子来捕获输入和输出梯度
+    def register_if_hooks():
+        hooks = []
+        
+        for name, module in model.named_modules():
+            if isinstance(module, IF):
+                # 存储该模块的梯度信息
+                gradient_info[name] = {
+                    'input_grad': None,
+                    'output_grad': None,
+                    'module': module
+                }
+                
+                # 注册输出梯度钩子
+                def create_output_hook(module_name):
+                    def output_hook(module, grad_input, grad_output):
+                        if grad_output[0] is not None:
+                            gradient_info[module_name]['output_grad'] = grad_output[0].detach().clone()
+                        
+                        # 打印详细的梯度信息
+                        print(f"\n{module_name} 梯度信息:")
+                        print(f"  grad_output (dL/dy): {grad_output[0].shape if grad_output[0] is not None else 'None'}")
+                        
+                        # 针对IF层的特殊性：只有输入梯度，没有权重和偏置梯度
+                        if isinstance(module, IF):
+                            print(f"  grad_input (dL/dx): {[g.shape for g in grad_input if g is not None]}")
+                            print(f"  📝 IF层说明: 只有输入梯度dL/dx，无权重梯度dL/dW和偏置梯度dL/db")
+                        else:
+                            print(f"  grad_input (dL/dx, dL/dW, dL/db): {[g.shape for g in grad_input if g is not None]}")
+                        
+                        # 详细分析grad_input的每个元素
+                        for i, grad in enumerate(grad_input):
+                            if grad is not None:
+                                if isinstance(module, IF):
+                                    print(f"    grad_input[{i}] (dL/dx): shape={grad.shape}, norm={grad.norm().item():.6f}, mean={grad.mean().item():.6f}")
+                                else:
+                                    if i == 0:
+                                        grad_type = "dL/dx"
+                                    elif i == 1:
+                                        grad_type = "dL/dW"
+                                    elif i == 2:
+                                        grad_type = "dL/db"
+                                    else:
+                                        grad_type = f"dL/dparam{i}"
+                                    print(f"    grad_input[{i}] ({grad_type}): shape={grad.shape}, norm={grad.norm().item():.6f}, mean={grad.mean().item():.6f}")
+                            else:
+                                if isinstance(module, IF):
+                                    print(f"    grad_input[{i}] (dL/dx): None")
+                                else:
+                                    print(f"    grad_input[{i}]: None")
+                        
+                        # 分析grad_output
+                        if grad_output[0] is not None:
+                            print(f"  grad_output[0]: shape={grad_output[0].shape}, norm={grad_output[0].norm().item():.6f}, mean={grad_output[0].mean().item():.6f}")
+                        
+                        # 针对IF层，额外显示阈值梯度信息
+                        if isinstance(module, IF) and module.thresh.grad is not None:
+                            print(f"  🎯 IF层阈值梯度 (dL/dthresh): {module.thresh.grad.item():.6f}")
+                        
+                        print("-" * 40)
+                    return output_hook
+                
+                # 注册输入梯度钩子
+                def create_input_hook(module_name):
+                    def input_hook(module, grad_input, grad_output):
+                        if grad_input[0] is not None:
+                            gradient_info[module_name]['input_grad'] = grad_input[0].detach().clone()
+                    return input_hook
+                
+                output_hook = module.register_full_backward_hook(create_output_hook(name))
+                input_hook = module.register_full_backward_hook(create_input_hook(name))
+                hooks.extend([output_hook, input_hook])
+        
+        return hooks
+    
+    # 注册钩子
+    hooks = register_if_hooks()
+    
+    try:
+        # 通过模块查找IF层并打印信息
+        for name, module in model.named_modules():
+            if isinstance(module, IF):
+                if_module_count += 1
+                print(f"IF模块: {name}")
+                print(f"  阈值(thresh): {module.thresh.item():.6f}")
+                print(f"  时间步数(T): {module.T}")
+                print(f"  量化级别(L): {module.L}")
+                print(f"  代理梯度类型: {module.surrogate_grad}")
+                print(f"  缩放因子: {module.scale}")
+                
+                # 打印阈值参数的梯度
+                if module.thresh.grad is not None:
+                    thresh_grad = module.thresh.grad.item()
+                    thresh_grad_norm = module.thresh.grad.norm().item()
+                    print(f"  阈值梯度: {thresh_grad:.6f}")
+                    print(f"  阈值梯度范数: {thresh_grad_norm:.6f}")
+                else:
+                    print(f"  阈值梯度: None")
+                
+                # 打印输入梯度信息
+                input_grad = gradient_info[name]['input_grad']
+                if input_grad is not None:
+                    print(f"  输入梯度:")
+                    print(f"    形状: {list(input_grad.shape)}")
+                    print(f"    范数: {input_grad.norm().item():.6f}")
+                    print(f"    均值: {input_grad.mean().item():.6f}")
+                    print(f"    标准差: {input_grad.std().item():.6f}")
+                    print(f"    最小值: {input_grad.min().item():.6f}")
+                    print(f"    最大值: {input_grad.max().item():.6f}")
+                    
+                    # 计算非零梯度比例
+                    non_zero_ratio = (input_grad != 0).float().mean().item()
+                    print(f"    非零梯度比例: {non_zero_ratio:.2%}")
+                    
+                    # 计算梯度分布
+                    grad_abs = input_grad.abs()
+                    print(f"    梯度分布:")
+                    print(f"      25%分位数: {torch.quantile(grad_abs, 0.25).item():.6f}")
+                    print(f"      50%分位数: {torch.quantile(grad_abs, 0.50).item():.6f}")
+                    print(f"      75%分位数: {torch.quantile(grad_abs, 0.75).item():.6f}")
+                    print(f"      95%分位数: {torch.quantile(grad_abs, 0.95).item():.6f}")
+                else:
+                    print(f"  输入梯度: None")
+                
+                # 打印输出梯度信息
+                output_grad = gradient_info[name]['output_grad']
+                if output_grad is not None:
+                    print(f"  输出梯度:")
+                    print(f"    形状: {list(output_grad.shape)}")
+                    print(f"    范数: {output_grad.norm().item():.6f}")
+                    print(f"    均值: {output_grad.mean().item():.6f}")
+                    print(f"    标准差: {output_grad.std().item():.6f}")
+                    print(f"    最小值: {output_grad.min().item():.6f}")
+                    print(f"    最大值: {output_grad.max().item():.6f}")
+                    
+                    # 计算非零梯度比例
+                    non_zero_ratio = (output_grad != 0).float().mean().item()
+                    print(f"    非零梯度比例: {non_zero_ratio:.2%}")
+                    
+                    # 计算梯度分布
+                    grad_abs = output_grad.abs()
+                    print(f"    梯度分布:")
+                    print(f"      25%分位数: {torch.quantile(grad_abs, 0.25).item():.6f}")
+                    print(f"      50%分位数: {torch.quantile(grad_abs, 0.50).item():.6f}")
+                    print(f"      75%分位数: {torch.quantile(grad_abs, 0.75).item():.6f}")
+                    print(f"      95%分位数: {torch.quantile(grad_abs, 0.95).item():.6f}")
+                else:
+                    print(f"  输出梯度: None")
+                
+                print("-"*60)
+        
+        # 总结
+        if if_module_count == 0:
+            print("未找到IF模块")
+        else:
+            print(f"总共找到 {if_module_count} 个IF模块")
+            print(f"已捕获输入和输出梯度信息")
+    
+    finally:
+        # 清理钩子
+        for hook in hooks:
+            hook.remove()
+    
+    print("="*80)
+
+def get_if_layer_input_output_gradients(model, dataloader, criterion):
+    """获取IF层的输入和输出梯度（需要完整的前向和反向传播）"""
+    print("="*80)
+    print("IF层输入输出梯度分析")
+    print("="*80)
+    
+    from Models.layer import IF
+    
+    # 存储梯度信息的字典
+    gradient_info = {}
+    
+    # 为每个IF层注册钩子
+    def register_gradient_hooks():
+        hooks = []
+        
+        for name, module in model.named_modules():
+            if isinstance(module, IF):
+                gradient_info[name] = {
+                    'input_grad': None,
+                    'output_grad': None,
+                    'module': module
+                }
+                
+                # 注册输出梯度钩子
+                def create_output_hook(module_name):
+                    def output_hook(module, grad_input, grad_output):
+                        if grad_output[0] is not None:
+                            gradient_info[module_name]['output_grad'] = grad_output[0].detach().clone()
+
+                        if grad_input[0] is not None:
+                            gradient_info[module_name]['input_grad'] = grad_input[0].detach().clone()
+
+                        # 打印详细的梯度信息
+                        print(f"\n{module_name} 梯度信息:")
+                        print(f"grad_output (dL/dy): {grad_output[0].shape if grad_output[0] is not None else 'None'}")
+                        
+                        # 针对IF层的特殊性：只有输入梯度，没有权重和偏置梯度
+                        if isinstance(module, IF):
+                            print(f"  grad_input (dL/dx): {[g.shape for g in grad_input if g is not None]}")
+                            print(f"  📝 IF层说明: 只有输入梯度dL/dx，无权重梯度dL/dW和偏置梯度dL/db")
+                        else:
+                            print(f"  grad_input (dL/dx, dL/dW, dL/db): {[g.shape for g in grad_input if g is not None]}")
+                        
+                        # # 详细分析grad_input的每个元素
+                        # for i, grad in enumerate(grad_input):
+                        #     if grad is not None:
+                        #         if isinstance(module, IF):
+                        #             print(f"    grad_input[{i}] (dL/dx): shape={grad.shape}, norm={grad.norm().item():.6f}, mean={grad.mean().item():.6f}")
+                        #         else:
+                        #             if i == 0:
+                        #                 grad_type = "dL/dx"
+                        #             elif i == 1:
+                        #                 grad_type = "dL/dW"
+                        #             elif i == 2:
+                        #                 grad_type = "dL/db"
+                        #             else:
+                        #                 grad_type = f"dL/dparam{i}"
+                        #             print(f"    grad_input[{i}] ({grad_type}): shape={grad.shape}, norm={grad.norm().item():.6f}, mean={grad.mean().item():.6f}")
+                        #     else:
+                        #         if isinstance(module, IF):
+                        #             print(f"    grad_input[{i}] (dL/dx): None")
+                        #         else:
+                        #             print(f"    grad_input[{i}]: None")
+                        
+                        # 分析grad_output
+                        if grad_output[0] is not None:
+                            print(f"  grad_output[0]: shape={grad_output[0].shape}, norm={grad_output[0].norm().item():.6f}, mean={grad_output[0].mean().item():.6f}")
+                        
+                        # 针对IF层，额外显示阈值梯度信息
+                        if isinstance(module, IF) and module.thresh.grad is not None:
+                            print(f"  🎯 IF层阈值梯度 (dL/dthresh): {module.thresh.grad.item():.6f}")
+                        
+                        print("-" * 40)
+                    return output_hook
+                
+                hook = module.register_full_backward_hook(create_output_hook(name))
+                hooks.append(hook)
+        
+        return hooks
+    
+    # 注册钩子
+    hooks = register_gradient_hooks()
+    
+    try:
+        # 确保模型处于训练模式
+        model.train()
+        
+        # 获取一批数据
+        data_iter = iter(dataloader)
+        inputs, targets = next(data_iter)
+        inputs, targets = inputs.to(next(model.parameters()).device), targets.to(next(model.parameters()).device)
+        
+        # 清空梯度
+        model.zero_grad()
+        
+        # 前向传播
+        outputs = model(inputs)
+        
+        # 处理SNN输出
+        if len(outputs.shape) > 2:
+            outputs = outputs.mean(0)
+        
+        # 计算损失
+        loss = criterion(outputs, targets)
+        print(f"损失: {loss.item():.6f}")
+        
+        # 反向传播
+        loss.backward()
+        
+        # 分析每个IF层
+        if_module_count = 0
+        for name, module in model.named_modules():
+            if isinstance(module, IF):
+                if_module_count += 1
+                print(f"IF模块: {name}")
+                print(f"  阈值(thresh): {module.thresh.item():.6f}")
+                print(f"  时间步数(T): {module.T}")
+                print(f"  量化级别(L): {module.L}")
+                
+                # 打印阈值梯度
+                if module.thresh.grad is not None:
+                    thresh_grad = module.thresh.grad.item()
+                    thresh_grad_norm = module.thresh.grad.norm().item()
+                    print(f"  阈值梯度: {thresh_grad:.6f}")
+                    print(f"  阈值梯度范数: {thresh_grad_norm:.6f}")
+                else:
+                    print(f"  阈值梯度: None")
+                
+                # 打印输出梯度
+                output_grad = gradient_info[name]['output_grad']
+                if output_grad is not None:
+                    print(f"  输出梯度:")
+                    print(f"    形状: {list(output_grad.shape)}")
+                    print(f"    范数: {output_grad.norm().item():.6f}")
+                    print(f"    均值: {output_grad.mean().item():.6f}")
+                    print(f"    标准差: {output_grad.std().item():.6f}")
+                    print(f"    最小值: {output_grad.min().item():.6f}")
+                    print(f"    最大值: {output_grad.max().item():.6f}")
+                    
+                    # 计算非零梯度比例
+                    non_zero_ratio = (output_grad != 0).float().mean().item()
+                    print(f"    非零梯度比例: {non_zero_ratio:.2%}")
+                    
+                    # 计算梯度分布
+                    grad_abs = output_grad.abs()
+                    print(f"    梯度分布:")
+                    print(f"      25%分位数: {torch.quantile(grad_abs, 0.25).item():.6f}")
+                    print(f"      50%分位数: {torch.quantile(grad_abs, 0.50).item():.6f}")
+                    print(f"      75%分位数: {torch.quantile(grad_abs, 0.75).item():.6f}")
+                    print(f"      95%分位数: {torch.quantile(grad_abs, 0.95).item():.6f}")
+                else:
+                    print(f"  输出梯度: None")
+                
+                # 尝试获取输入梯度（通过检查输入张量的梯度）
+                # 打印输入梯度信息
+                input_grad = gradient_info[name]['input_grad']
+                if input_grad is not None:
+                    print(f"  输入梯度:")
+                    print(f"    形状: {list(input_grad.shape)}")
+                    print(f"    范数: {input_grad.norm().item():.6f}")
+                    print(f"    均值: {input_grad.mean().item():.6f}")
+                    print(f"    标准差: {input_grad.std().item():.6f}")
+                    print(f"    最小值: {input_grad.min().item():.6f}")
+                    print(f"    最大值: {input_grad.max().item():.6f}")
+                    
+                    # 计算非零梯度比例
+                    non_zero_ratio = (input_grad != 0).float().mean().item()
+                    print(f"    非零梯度比例: {non_zero_ratio:.2%}")
+                    
+                    # 计算梯度分布
+                    grad_abs = input_grad.abs()
+                    print(f"    梯度分布:")
+                    print(f"      25%分位数: {torch.quantile(grad_abs, 0.25).item():.6f}")
+                    print(f"      50%分位数: {torch.quantile(grad_abs, 0.50).item():.6f}")
+                    print(f"      75%分位数: {torch.quantile(grad_abs, 0.75).item():.6f}")
+                    print(f"      95%分位数: {torch.quantile(grad_abs, 0.95).item():.6f}")
+                else:
+                    print(f"  输入梯度: None")
+                print("-"*60)
+        
+        # 总结
+        if if_module_count == 0:
+            print("未找到IF模块")
+        else:
+            print(f"总共找到 {if_module_count} 个IF模块")
+            print(f"已成功捕获输出梯度信息")
+    
+    finally:
+        # 清理钩子
+        for hook in hooks:
+            hook.remove()
+    
     print("="*80)
 
 class GradientAnalyzer:
@@ -432,40 +773,58 @@ def main():
         model.to(device)
         model.train()
         
-        # 加载数据
-        print("加载CIFAR10数据集...")
+        # # 加载数据
+        # print("加载CIFAR10数据集...")
         train_loader, test_loader = datapool('cifar10', args.batch_size)
         
-        # 获取一批数据
+        # # 获取一批数据
         data_iter = iter(train_loader)
         images, labels = next(data_iter)
         images, labels = images.to(device), labels.to(device)
         
-        print(f"输入形状: {images.shape}, 标签形状: {labels.shape}")
+        # print(f"输入形状: {images.shape}, 标签形状: {labels.shape}")
         
-        # 前向传播
-        print("执行前向传播...")
+        # # 前向传播
+        # print("执行前向传播...")
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.SGD(model.parameters(), lr=0.01)
         
         optimizer.zero_grad()
         outputs = model(images)
         
-        # 处理SNN输出
+        # # 处理SNN输出
         if len(outputs.shape) > 2:
             outputs = outputs.mean(0)
         
         loss = criterion(outputs, labels)
         print(f"损失: {loss.item():.6f}")
         
-        # 反向传播
-        print("执行反向传播...")
+        # # 反向传播
+        # print("执行反向传播...")
         loss.backward()
         
-        # 只打印IF层信息
-        print_if_layers_only(model)
-        print_all_if_module_info(model)
+        # # 只打印IF层信息
+        # print_if_module_info(model)
         
+        # # 打印IF层详细信息（包含输入输出梯度）
+        # print("\n" + "="*80)
+        # print("IF层详细信息（包含输入输出梯度）")
+        # print("="*80)
+        # new_print_if_module_info(model)
+        
+        # 获取IF层的输入输出梯度（需要完整的前向和反向传播）
+        print("\n" + "="*80)
+        print("IF层输入输出梯度完整分析")
+        print("="*80)
+        get_if_layer_input_output_gradients(model, train_loader, criterion)
+        
+        # # 专门分析IF层的梯度分布特征
+        # print("\n" + "="*80)
+        # print("IF层梯度分布特征详细分析")
+        # print("="*80)
+        # analyze_if_gradient_distribution(model, train_loader, criterion)
+        
+        return
         # 分析全连接层梯度（默认启用）
         print("\n" + "="*80)
         print("开始全连接层梯度分析")
@@ -572,3 +931,312 @@ def main():
 
 if __name__ == "__main__":
     main() 
+
+def test_new_print_if_module_info():
+    """测试new_print_if_module_info函数的功能"""
+    print("="*80)
+    print("测试new_print_if_module_info函数")
+    print("="*80)
+    
+    try:
+        # 创建模型
+        model = modelpool('vgg16', 'cifar10')
+        
+        # 加载预训练模型
+        model_path = '/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP/cifar10-checkpoints/vgg16_wd[0.0005].pth'
+        state_dict = torch.load(model_path, map_location=torch.device('cpu'))
+        
+        # 处理旧版本state_dict的兼容性
+        keys = list(state_dict.keys())
+        for k in keys:
+            if "relu.up" in k:
+                state_dict[k[:-7]+'act.thresh'] = state_dict.pop(k)
+            elif "up" in k:
+                state_dict[k[:-2]+'thresh'] = state_dict.pop(k)
+        
+        model.load_state_dict(state_dict)
+        
+        # 设置为SNN模式
+        model.set_T(8)
+        model.set_L(4)
+        model.train()
+        
+        # 创建测试数据
+        test_input = torch.randn(1, 3, 32, 32, requires_grad=True)
+        criterion = nn.CrossEntropyLoss()
+        
+        # 前向传播
+        output = model(test_input)
+        if len(output.shape) > 2:
+            output = output.mean(0)
+        
+        # 计算损失
+        target = torch.tensor([0])
+        loss = criterion(output, target)
+        
+        # 反向传播
+        loss.backward()
+        
+        # 测试新函数
+        new_print_if_module_info(model)
+        
+        print("✅ 测试完成")
+        
+    except Exception as e:
+        print(f"❌ 测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+
+# 如果要运行测试，取消下面的注释
+# test_new_print_if_module_info() 
+
+def analyze_if_gradient_distribution(model, dataloader, criterion):
+    """专门分析IF层的梯度分布特征"""
+    print("="*80)
+    print("IF层梯度分布特征分析")
+    print("="*80)
+    
+    from Models.layer import IF
+    
+    # 存储梯度信息的字典
+    gradient_info = {}
+    
+    # 为每个IF层注册钩子
+    def register_gradient_hooks():
+        hooks = []
+        
+        for name, module in model.named_modules():
+            if isinstance(module, IF):
+                gradient_info[name] = {
+                    'input_grad': None,
+                    'output_grad': None,
+                    'threshold_grad': None,
+                    'module': module
+                }
+                
+                # 注册输出梯度钩子
+                def create_output_hook(module_name):
+                    def output_hook(module, grad_input, grad_output):
+                        if grad_output[0] is not None:
+                            gradient_info[module_name]['output_grad'] = grad_output[0].detach().clone()
+                        
+                        # 捕获输入梯度（对于IF层，只有dL/dx）
+                        if grad_input[0] is not None:
+                            gradient_info[module_name]['input_grad'] = grad_input[0].detach().clone()
+                        
+                        # 捕获阈值梯度
+                        if module.thresh.grad is not None:
+                            gradient_info[module_name]['threshold_grad'] = module.thresh.grad.detach().clone()
+                        
+                    return output_hook
+                
+                hook = module.register_full_backward_hook(create_output_hook(name))
+                hooks.append(hook)
+        
+        return hooks
+    
+    # 注册钩子
+    hooks = register_gradient_hooks()
+    
+    try:
+        # 确保模型处于训练模式
+        model.train()
+        
+        # 获取一批数据
+        data_iter = iter(dataloader)
+        inputs, targets = next(data_iter)
+        inputs, targets = inputs.to(next(model.parameters()).device), targets.to(next(model.parameters()).device)
+        
+        # 清空梯度
+        model.zero_grad()
+        
+        # 前向传播
+        outputs = model(inputs)
+        
+        # 处理SNN输出
+        if len(outputs.shape) > 2:
+            outputs = outputs.mean(0)
+        
+        # 计算损失
+        loss = criterion(outputs, targets)
+        
+        # 反向传播
+        loss.backward()
+        
+        # 分析每个IF层的梯度分布
+        for name, module in model.named_modules():
+            if isinstance(module, IF):
+                print(f"\n🔍 IF层: {name}")
+                print("-" * 50)
+                
+                # 1. 阈值梯度分析
+                thresh_grad = gradient_info[name]['threshold_grad']
+                if thresh_grad is not None:
+                    print(f"🎯 阈值梯度 (dL/dthresh):")
+                    print(f"  数值: {thresh_grad.item():.8f}")
+                    print(f"  绝对值: {abs(thresh_grad.item()):.8f}")
+                    print(f"  符号: {'正' if thresh_grad.item() > 0 else '负' if thresh_grad.item() < 0 else '零'}")
+                else:
+                    print(f"🎯 阈值梯度: None")
+                
+                # 2. 输入梯度分析
+                input_grad = gradient_info[name]['input_grad']
+                if input_grad is not None:
+                    print(f"\n📥 输入梯度 (dL/dx) 分布:")
+                    print(f"  形状: {list(input_grad.shape)}")
+                    print(f"  范数: {input_grad.norm().item():.6f}")
+                    print(f"  均值: {input_grad.mean().item():.6f}")
+                    print(f"  标准差: {input_grad.std().item():.6f}")
+                    print(f"  最小值: {input_grad.min().item():.6f}")
+                    print(f"  最大值: {input_grad.max().item():.6f}")
+                    
+                    # 梯度分布统计
+                    grad_abs = input_grad.abs()
+                    print(f"  绝对值分布:")
+                    print(f"    25%分位数: {torch.quantile(grad_abs, 0.25).item():.6f}")
+                    print(f"    50%分位数: {torch.quantile(grad_abs, 0.50).item():.6f}")
+                    print(f"    75%分位数: {torch.quantile(grad_abs, 0.75).item():.6f}")
+                    print(f"    90%分位数: {torch.quantile(grad_abs, 0.90).item():.6f}")
+                    print(f"    95%分位数: {torch.quantile(grad_abs, 0.95).item():.6f}")
+                    
+                    # 非零梯度比例
+                    non_zero_ratio = (input_grad != 0).float().mean().item()
+                    print(f"  非零梯度比例: {non_zero_ratio:.2%}")
+                    
+                    # 梯度稀疏性分析
+                    small_grad_ratio = (grad_abs < 0.01).float().mean().item()
+                    print(f"  小梯度比例 (<0.01): {small_grad_ratio:.2%}")
+                    
+                    # 梯度方向分析
+                    positive_ratio = (input_grad > 0).float().mean().item()
+                    negative_ratio = (input_grad < 0).float().mean().item()
+                    zero_ratio = (input_grad == 0).float().mean().item()
+                    print(f"  梯度方向分布:")
+                    print(f"    正值: {positive_ratio:.2%}")
+                    print(f"    负值: {negative_ratio:.2%}")
+                    print(f"    零值: {zero_ratio:.2%}")
+                else:
+                    print(f"📥 输入梯度: None")
+                
+                # 3. 输出梯度分析
+                output_grad = gradient_info[name]['output_grad']
+                if output_grad is not None:
+                    print(f"\n📤 输出梯度 (dL/dy) 分布:")
+                    print(f"  形状: {list(output_grad.shape)}")
+                    print(f"  范数: {output_grad.norm().item():.6f}")
+                    print(f"  均值: {output_grad.mean().item():.6f}")
+                    print(f"  标准差: {output_grad.std().item():.6f}")
+                    print(f"  最小值: {output_grad.min().item():.6f}")
+                    print(f"  最大值: {output_grad.max().item():.6f}")
+                    
+                    # 输出梯度分布统计
+                    out_grad_abs = output_grad.abs()
+                    print(f"  绝对值分布:")
+                    print(f"    25%分位数: {torch.quantile(out_grad_abs, 0.25).item():.6f}")
+                    print(f"    50%分位数: {torch.quantile(out_grad_abs, 0.50).item():.6f}")
+                    print(f"    75%分位数: {torch.quantile(out_grad_abs, 0.75).item():.6f}")
+                    print(f"    90%分位数: {torch.quantile(out_grad_abs, 0.90).item():.6f}")
+                    print(f"    95%分位数: {torch.quantile(out_grad_abs, 0.95).item():.6f}")
+                    
+                    # 非零梯度比例
+                    non_zero_ratio = (output_grad != 0).float().mean().item()
+                    print(f"  非零梯度比例: {non_zero_ratio:.2%}")
+                else:
+                    print(f"📤 输出梯度: None")
+                
+                # 4. 梯度传播效率分析
+                if input_grad is not None and output_grad is not None:
+                    input_norm = input_grad.norm().item()
+                    output_norm = output_grad.norm().item()
+                    if output_norm > 0:
+                        propagation_ratio = input_norm / output_norm
+                        print(f"\n🔄 梯度传播效率:")
+                        print(f"  输入梯度范数: {input_norm:.6f}")
+                        print(f"  输出梯度范数: {output_norm:.6f}")
+                        print(f"  传播比例: {propagation_ratio:.6f}")
+                        
+                        if propagation_ratio < 0.1:
+                            print(f"  ⚠️  警告: 梯度传播比例较低，可能存在梯度消失")
+                        elif propagation_ratio > 10:
+                            print(f"  ⚠️  警告: 梯度传播比例较高，可能存在梯度爆炸")
+                        else:
+                            print(f"  ✅ 梯度传播比例正常")
+                
+                print("-" * 50)
+        
+        print(f"\n📊 总结:")
+        print(f"  分析了 {len([m for m in model.modules() if isinstance(m, IF)])} 个IF层")
+        print(f"  每个IF层只有1个阈值参数，无权重和偏置参数")
+        print(f"  梯度信息包括: 输入梯度(dL/dx)、输出梯度(dL/dy)、阈值梯度(dL/dthresh)")
+    
+    finally:
+        # 清理钩子
+        for hook in hooks:
+            hook.remove()
+    
+    print("="*80) 
+
+def test_analyze_if_gradient_distribution():
+    """测试IF层梯度分布分析函数"""
+    print("="*80)
+    print("测试IF层梯度分布分析函数")
+    print("="*80)
+    
+    import torch
+    import torch.nn as nn
+    from Models import modelpool
+    from Preprocess import datapool
+    
+    # 设置设备
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"使用设备: {device}")
+    
+    try:
+        # 创建模型
+        print("创建VGG16模型...")
+        model = modelpool('vgg16', 'cifar10')
+        
+        # 加载预训练模型
+        model_path = '/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP/cifar10-checkpoints/vgg16_wd[0.0005].pth'
+        print(f"加载预训练模型: {model_path}")
+        state_dict = torch.load(model_path, map_location=torch.device('cpu'))
+        
+        # 处理旧版本state_dict的兼容性
+        keys = list(state_dict.keys())
+        for k in keys:
+            if "relu.up" in k:
+                state_dict[k[:-7]+'act.thresh'] = state_dict.pop(k)
+            elif "up" in k:
+                state_dict[k[:-2]+'thresh'] = state_dict.pop(k)
+        
+        model.load_state_dict(state_dict)
+        print("✅ 预训练模型加载成功")
+        
+        # 设置为SNN模式
+        model.set_T(8)
+        model.set_L(4)
+        print("设置为SNN模式: T=8, L=4")
+        
+        model.to(device)
+        model.train()
+        
+        # 加载数据
+        print("加载CIFAR10数据集...")
+        train_loader, _ = datapool('cifar10', 32)
+        
+        # 定义损失函数
+        criterion = nn.CrossEntropyLoss()
+        
+        # 运行梯度分布分析
+        print("开始IF层梯度分布分析...")
+        analyze_if_gradient_distribution(model, train_loader, criterion)
+        
+        print("✅ 测试完成")
+        
+    except Exception as e:
+        print(f"❌ 测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+
+# 如果要运行测试，取消下面的注释
+# test_analyze_if_gradient_distribution() 

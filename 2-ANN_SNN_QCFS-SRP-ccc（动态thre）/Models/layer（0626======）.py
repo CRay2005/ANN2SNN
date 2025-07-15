@@ -169,12 +169,12 @@ class IF(nn.Module):
                 mem = mem + x[t, ...]
                 if thre.shape[0] == 1:
                     # 单阈值情况
-                    # spike = self.act(mem - thre, self.gama) * thre
-                    spike = self.surrogate_spike(mem, thre, self.surrogate_grad, self.scale) * thre
+                    spike = self.act(mem - thre, self.gama) * thre
+                    # spike = self.surrogate_spike(mem, thre, self.surrogate_grad, self.scale) * thre
                 else:
                     # 多阈值情况
-                    # spike = self.act(mem - thre.view(1, -1, 1, 1), self.gama) * thre.view(1, -1, 1, 1)
-                    spike = self.surrogate_spike(mem, thre, self.surrogate_grad, self.scale) * thre.view(1, -1, 1, 1)
+                    spike = self.act(mem - thre.view(1, -1, 1, 1), self.gama) * thre.view(1, -1, 1, 1)
+                    # spike = self.surrogate_spike(mem, thre, self.surrogate_grad, self.scale) * thre.view(1, -1, 1, 1)
                 mem = mem - spike
                 spike_pot.append(spike)
             x = torch.stack(spike_pot, dim=0)

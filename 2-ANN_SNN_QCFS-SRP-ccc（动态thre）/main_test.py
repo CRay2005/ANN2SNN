@@ -9,7 +9,7 @@ from Models import modelpool
 from Preprocess import datapool
 from utils import train, val, seed_all, get_logger
 from Models.layer import *
-# from Models.layer import load_model_compatible
+from Models.layer import load_model_compatible
 import pandas as pd
 
 # 设置环境变量抑制cuDNN警告
@@ -29,7 +29,7 @@ parser.add_argument('--seed',default=42,type=int,help='seed for initializing tra
 parser.add_argument('-suffix','--suffix',default='', type=str,help='suffix')
 
 # model configuration
-parser.add_argument('-data', '--dataset',default='cifar10',type=str,help='dataset')    #imagenet, cifar10, cifar100
+parser.add_argument('-data', '--dataset',default='cifar100',type=str,help='dataset')    #imagenet, cifar10, cifar100
 parser.add_argument('-arch','--model',default='vgg16',type=str,help='model')    #resnet18，resnet20，resnet34，vgg16 
 parser.add_argument('-id', '--identifier', type=str,help='model statedict identifier')
 
@@ -63,57 +63,77 @@ def main():
         elif "up" in k:
             state_dict[k[:-2]+'thresh'] = state_dict.pop(k)
     
-    model.load_state_dict(state_dict)
+    # model.load_state_dict(state_dict)
     # 使用兼容性加载函数
-    # try:
-    #     load_model_compatible(model, state_dict)
-    # except Exception as e:
-    #     print(f"兼容性加载失败，尝试常规加载: {e}")
-    #     model.load_state_dict(state_dict, strict=False)  # 使用非严格模式作为备选
+    try:
+        load_model_compatible(model, state_dict)
+    except Exception as e:
+        print(f"兼容性加载失败，尝试常规加载: {e}")
+        model.load_state_dict(state_dict, strict=False)  # 使用非严格模式作为备选
 
     model.to(device)
     model.set_T(args.time)
     model.set_L(8)
 
-    # # 生成每层神经元的最优阈值
+    # 生成每层神经元的最优阈值
     # print("生成每层神经元的最优阈值...")
     # acc = val(model, test_loader, device, args.time, optimize_thre_flag=True)
 
     # 读取阈值文件并设置给IF层
-    # if_count = 0
-    # for name, module in model.named_modules():
-    #     if isinstance(module, IF):
-    #         # 构建阈值文件路径
-    #         thre_file = f'/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP-ccc（动态thre）/log/IF_{if_count}_thresholds_stats.csv'
+    if_count = 0
+    for name, module in model.named_modules():
+        if isinstance(module, IF):
+            # 构建阈值文件路径
+            thre_file = f'/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP-ccc（动态thre）/log/IF_{if_count}_thresholds_stats.csv'
             
-    #         if os.path.exists(thre_file):
-    #             # 读取CSV文件
-    #             thre_df = pd.read_csv(thre_file)
+            if os.path.exists(thre_file):
+                # 读取CSV文件
+                thre_df = pd.read_csv(thre_file)
                 
-    #             # 设置阈值 - 根据通道数自动判断
-    #             threshold_values = thre_df['50分位'].values if len(thre_df) > 1 else [thre_df['50分位'].mean()]
+                # 设置阈值 - 根据通道数自动判断
+                threshold_values = thre_df['均值'].values if len(thre_df) > 1 else [thre_df['50分位'].mean()]
+                              
+                # mean_value = thre_df['60分位'].mean()
+                # threshold_values = [mean_value] * len(thre_df)
+
+                # 统一创建tensor
+                module.neuron_thre = torch.tensor(
+                    threshold_values,
+                    dtype=module.thresh.dtype,
+                    device=module.thresh.device
+                )
                 
-    #             # 统一创建tensor
-    #             module.neuron_thre = torch.tensor(
-    #                 threshold_values,
-    #                 dtype=module.thresh.dtype,
-    #                 device=module.thresh.device
-    #             )
-                
-    #             # 打印信息
-    #             layer_type = "卷积" if len(threshold_values) > 1 else "全连接"
-    #             print(f"已成功设置第{if_count}层{layer_type}IF的{len(threshold_values)}个通道的阈值")
-    #         else:
-    #             # 如果文件不存在，使用原有thresh
-    #             module.neuron_thre = module.thresh.clone()
-    #             # print(f"已设置层 {name} 的阈值为原有thresh值: {module.thresh.item():.6f}")
+                # 打印信息
+                # layer_type = "卷积" if len(threshold_values) > 1 else "全连接"
+                # print(f"第{if_count}层{layer_type}IF: 原阈值={module.thresh.item():.6f}, 新阈值={mean_value:.6f}, 通道数={len(threshold_values)}")
+                # print(f"已成功设置第{if_count}层{layer_type}IF的{len(threshold_values)}个通道的阈值")
+            else:
+                # 如果文件不存在，使用原有thresh
+                module.neuron_thre = module.thresh.clone()
+                # print(f"已设置层 {name} 的阈值为原有thresh值: {module.thresh.item():.6f}")
             
-    #         if_count += 1
+            if_count += 1
     
     # 测试模型
     print("开始测试模型...")
     acc = val(model, test_loader, device, args.time,optimize_thre_flag=False)
     print(acc)
+    
+    # 打印所有IF层的thresh参数值
+    print("\n=== 所有IF层的thresh参数值 ===")
+    if_count = 0
+    for name, module in model.named_modules():
+        if isinstance(module, IF):
+            print(f"第{if_count}层IF ({name}):")
+            print(f"  - thresh参数值: {module.thresh.item():.6f}")
+            print(f"  - neuron_thre形状: {module.neuron_thre.shape}")
+            print(f"  - neuron_thre值: {module.neuron_thre.flatten()[:5].tolist()}...")  # 只显示前5个值
+            if_count += 1
+    
+    if if_count == 0:
+        print("未找到任何IF层")
+    else:
+        print(f"\n总共找到 {if_count} 个IF层")
 
 if __name__ == "__main__":
     main()

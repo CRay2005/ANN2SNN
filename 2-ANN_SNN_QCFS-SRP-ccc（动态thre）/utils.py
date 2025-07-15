@@ -66,9 +66,9 @@ def val(model, test_loader, device, T,optimize_thre_flag=False):
     total = 0
     model.eval()
 
-    # for m in model.modules():
-    #     if isinstance(m, IF):
-    #         m.optimize_thre_flag = optimize_thre_flag
+    for m in model.modules():
+        if isinstance(m, IF):
+            m.optimize_thre_flag = optimize_thre_flag
 
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate((test_loader)):
