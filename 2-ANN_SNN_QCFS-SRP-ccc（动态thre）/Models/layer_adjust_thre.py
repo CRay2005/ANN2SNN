@@ -116,8 +116,11 @@ class IF(nn.Module):
                  surrogate_grad='sigmoid', scale=5, num_neurons=0):
         super(IF, self).__init__()
         self.act = ZIF.apply
-        # 强制使用标量阈值，忽略num_neurons参数
-        self.thresh = nn.Parameter(torch.tensor([thresh]), requires_grad=True)
+        # 如果指定了神经元数量，创建向量阈值；否则使用标量阈值
+        if num_neurons > 0:
+            self.thresh = nn.Parameter(torch.full((num_neurons,), thresh), requires_grad=True)
+        else:
+            self.thresh = nn.Parameter(torch.tensor([thresh]), requires_grad=True)
         self.tau = tau
         self.gama = gama
         self.expand = ExpandTemporalDim(T)

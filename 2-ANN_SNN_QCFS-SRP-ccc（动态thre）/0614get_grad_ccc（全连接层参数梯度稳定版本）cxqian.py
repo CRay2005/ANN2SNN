@@ -33,7 +33,157 @@ class GradientAnalyzer:
         self.model = model
         self.gradient_hooks = {}
         self.gradient_records = {}
+        self.weight_grad_hooks = {}
+        self.tensor_grad_hooks = {}
+        self.if_grad_hooks = {}
+
+
+    def register_comprehensive_hooks(self):
+        """注册梯度钩子"""
+        # 移除现有钩子
+        for handle in self.weight_grad_hooks.values():
+            handle.remove()
+        for handle in self.tensor_grad_hooks.values():
+            handle.remove()
+        for handle in self.if_grad_hooks.values():
+            handle.remove()
+        self.weight_grad_hooks = {}
+        self.tensor_grad_hooks = {}
+        self.if_grad_hooks = {}
+        # 使用不同的变量名避免与register_gradient_hooks冲突
+        self.comprehensive_gradient_records = {}
         
+        # 查找所有全连接层和目标IF层
+        fc_count = 0
+        if_count = 0
+        target_if_layers = ['classifier.2', 'classifier.5']
+        
+        for name, module in self.model.named_modules():
+            if isinstance(module, nn.Linear):
+                fc_count += 1
+                
+                # 1. 权重梯度钩子
+                weight_hook = self._weight_gradient_hook(name)
+                weight_handle = module.weight.register_hook(weight_hook)
+                self.weight_grad_hooks[name] = weight_handle
+                
+                # 2. 张量梯度钩子（grad_input和grad_output）
+                tensor_hook = self._tensor_gradient_hook(name)
+                tensor_handle = module.register_full_backward_hook(tensor_hook)
+                self.tensor_grad_hooks[name] = tensor_handle
+                
+                # 初始化记录
+                self.comprehensive_gradient_records[name] = {
+                    'layer_type': 'fc',
+                    'weight_grad': None,      # 权重梯度
+                    'input_grad': None,       # 输入梯度
+                    'output_grad': None,      # 输出梯度
+                    'importance_scores': {}   # 综合重要性分数
+                }
+            
+            # 添加IF层梯度采集 (仅针对classifier.2和classifier.5)
+            elif isinstance(module, IF) and name in target_if_layers:
+                if_count += 1
+                
+                # 1. 阈值梯度钩子
+                thresh_hook = self._threshold_gradient_hook(name)
+                thresh_handle = module.thresh.register_hook(thresh_hook)
+                self.if_grad_hooks[f"{name}_thresh"] = thresh_handle
+                
+                # 2. IF层张量梯度钩子
+                if_tensor_hook = self._if_tensor_gradient_hook(name)
+                if_tensor_handle = module.register_full_backward_hook(if_tensor_hook)
+                self.if_grad_hooks[f"{name}_tensor"] = if_tensor_handle
+                
+                # 初始化IF层记录
+                self.comprehensive_gradient_records[name] = {
+                    'layer_type': 'if',
+                    'threshold_grad': None,   # 阈值梯度
+                    'input_grad': None,       # 输入梯度
+                    'output_grad': None,      # 输出梯度
+                    'threshold_value': None,  # 阈值数值
+                }
+        
+        print(f"总共注册了 {fc_count} 个全连接层和 {if_count} 个IF层的梯度钩子")
+
+    def _weight_gradient_hook(self, name):
+        """权重梯度钩子"""
+        def hook(grad):
+            if grad is not None:
+                # 计算每个输出神经元的平均权重梯度
+                if grad.dim() > 1:
+                    neuron_weight_grads = grad.abs().mean(dim=1)  # [out_features]
+                else:
+                    neuron_weight_grads = grad.abs()
+
+                self.comprehensive_gradient_records[name]['weight_grad'] = neuron_weight_grads.detach().cpu()
+        return hook
+    
+    def _tensor_gradient_hook(self, name):
+        """张量梯度钩子"""
+        def hook(module, grad_input, grad_output):
+
+            
+            # 捕获输入梯度
+            if grad_input[0] is not None:
+                input_grad = grad_input[0]  # [batch_size, in_features]
+                # 计算每个输入神经元的平均梯度
+                neuron_input_grads = input_grad.abs().mean(dim=0)  # [in_features]
+                self.comprehensive_gradient_records[name]['input_grad'] = neuron_input_grads.detach().cpu()
+            
+            # 捕获输出梯度
+            if grad_output[0] is not None:
+                output_grad = grad_output[0]  # [batch_size, out_features]
+                # 计算每个输出神经元的平均梯度
+                neuron_output_grads = output_grad.abs().mean(dim=0)  # [out_features]
+                self.comprehensive_gradient_records[name]['output_grad'] = neuron_output_grads.detach().cpu()
+        return hook
+    
+    def _threshold_gradient_hook(self, name):
+        """IF层阈值梯度钩子"""
+        def hook(grad):
+            if grad is not None:
+                # 阈值梯度现在是向量，需要计算平均值
+                thresh_grad = grad.abs().mean().item()  # 计算平均梯度
+                self.comprehensive_gradient_records[name]['threshold_grad'] = thresh_grad
+        return hook
+    
+    def _if_tensor_gradient_hook(self, name):
+        """IF层张量梯度钩子"""
+        def hook(module, grad_input, grad_output):
+            
+            # 保存阈值数值（现在是向量，计算平均值）
+            self.comprehensive_gradient_records[name]['threshold_value'] = module.thresh.data.mean().item()
+            
+            # 捕获输入梯度
+            if grad_input[0] is not None:
+                input_grad = grad_input[0]  # [batch_size, features] or [T*batch_size, features]
+                # 处理SNN模式的时间维度
+                if module.T > 0:
+                    # SNN模式: reshape回 [T, batch_size, features] 然后在时间维度平均
+                    batch_size = input_grad.shape[0] // module.T
+                    input_grad = input_grad.view(module.T, batch_size, -1)
+                    input_grad = input_grad.mean(dim=0)  # 时间维度平均: [batch_size, features]
+                
+                # 计算每个神经元的平均梯度
+                neuron_input_grads = input_grad.abs().mean(dim=0)  # [features]
+                self.comprehensive_gradient_records[name]['input_grad'] = neuron_input_grads.detach().cpu()
+            
+            # 捕获输出梯度
+            if grad_output[0] is not None:
+                output_grad = grad_output[0]  # [batch_size, features] or [T*batch_size, features]
+                # 处理SNN模式的时间维度
+                if module.T > 0:
+                    # SNN模式: reshape回 [T, batch_size, features] 然后在时间维度平均
+                    batch_size = output_grad.shape[0] // module.T
+                    output_grad = output_grad.view(module.T, batch_size, -1)
+                    output_grad = output_grad.mean(dim=0)  # 时间维度平均: [batch_size, features]
+                
+                # 计算每个神经元的平均梯度
+                neuron_output_grads = output_grad.abs().mean(dim=0)  # [features]
+                self.comprehensive_gradient_records[name]['output_grad'] = neuron_output_grads.detach().cpu()
+        return hook
+    
     def register_gradient_hooks(self):
         """为所有全连接层注册梯度记录钩子"""
         # print("注册全连接层梯度钩子...")
@@ -75,7 +225,143 @@ class GradientAnalyzer:
             # 保存梯度统计信息
             self.gradient_records[name] = neuron_grads.detach().cpu()
         return hook
-    
+
+    def analyze_gradients_improved(self, dataloader, criterion, num_batches=5):
+        """
+        分析全连接层梯度分布
+        
+        参数:
+        dataloader - 数据加载器
+        criterion - 损失函数
+        num_batches - 分析批次数
+        
+        返回:
+        gradient_stats - 梯度统计信息，包含三种梯度的平均值
+        """
+        print(f"\n开始分析 {num_batches} 个批次的梯度分布...")
+        
+        # 保存原始训练状态
+        original_training = self.model.training
+        
+        # 注册梯度钩子
+        self.register_comprehensive_hooks()
+        
+        # 确保模型处于训练模式
+        self.model.train()
+        
+        # 梯度统计收集器
+        gradient_stats = {}
+        for name in self.comprehensive_gradient_records.keys():
+            layer_type = self.comprehensive_gradient_records[name]['layer_type']
+            if layer_type == 'fc':
+                gradient_stats[name] = {
+                    'layer_type': 'fc',
+                    'weight_grad_values': [],
+                    'input_grad_values': [],
+                    'output_grad_values': []
+                }
+            elif layer_type == 'if':
+                gradient_stats[name] = {
+                    'layer_type': 'if',
+                    'threshold_grad_values': [],
+                    'input_grad_values': [],
+                    'output_grad_values': [],
+                    'threshold_values': []
+                }
+        
+        # 处理指定批次数据
+        batch_count = 0
+        data_iter = iter(dataloader)
+        
+        for batch_idx in range(num_batches):
+            try:
+                inputs, targets = next(data_iter)
+                inputs, targets = inputs.to(next(self.model.parameters()).device), targets.to(next(self.model.parameters()).device)
+            except StopIteration:
+                print(f"数据不足，只处理了 {batch_idx} 个批次")
+                break
+                
+            # 清空梯度
+            self.model.zero_grad()
+            
+            # 前向传播
+            outputs = self.model(inputs)
+            
+            # 处理SNN输出
+            if len(outputs.shape) > 2:
+                outputs = outputs.mean(0)  # 对时间维度求平均
+            
+            # 计算损失
+            loss = criterion(outputs, targets)
+            
+            # 计算准确率
+            _, predicted = torch.max(outputs.data, 1)
+            total = targets.size(0)
+            correct = (predicted == targets).sum().item()
+            accuracy = 100 * correct / total
+            
+            # 反向传播（触发梯度钩子）
+            loss.backward()
+            
+            # 收集梯度数据
+            for name, records in self.comprehensive_gradient_records.items():
+                layer_type = records['layer_type']
+                
+                if layer_type == 'fc':
+                    # FC层梯度收集
+                    if records['weight_grad'] is not None:
+                        gradient_stats[name]['weight_grad_values'].append(records['weight_grad'].numpy())
+                    if records['input_grad'] is not None:
+                        gradient_stats[name]['input_grad_values'].append(records['input_grad'].numpy())
+                    if records['output_grad'] is not None:
+                        gradient_stats[name]['output_grad_values'].append(records['output_grad'].numpy())
+                
+                elif layer_type == 'if':
+                    # IF层梯度收集
+                    if records['threshold_grad'] is not None:
+                        gradient_stats[name]['threshold_grad_values'].append(records['threshold_grad'])
+                    if records['input_grad'] is not None:
+                        gradient_stats[name]['input_grad_values'].append(records['input_grad'].numpy())
+                    if records['output_grad'] is not None:
+                        gradient_stats[name]['output_grad_values'].append(records['output_grad'].numpy())
+                    if records['threshold_value'] is not None:
+                        gradient_stats[name]['threshold_values'].append(records['threshold_value'])
+            
+            batch_count += 1
+            print(f"  处理批次 {batch_count}/{num_batches}, 损失: {loss.item():.6f}, 准确率: {accuracy:.2f}%")
+        
+        # 计算平均梯度
+        for name in gradient_stats:
+            layer_type = gradient_stats[name]['layer_type']
+            
+            if layer_type == 'fc':
+                # FC层平均梯度计算
+                if gradient_stats[name]['weight_grad_values']:
+                    gradient_stats[name]['weight_grad_values'] = np.mean(gradient_stats[name]['weight_grad_values'], axis=0)
+                if gradient_stats[name]['input_grad_values']:
+                    gradient_stats[name]['input_grad_values'] = np.mean(gradient_stats[name]['input_grad_values'], axis=0)
+                if gradient_stats[name]['output_grad_values']:
+                    gradient_stats[name]['output_grad_values'] = np.mean(gradient_stats[name]['output_grad_values'], axis=0)
+            
+            elif layer_type == 'if':
+                # IF层平均梯度计算
+                if gradient_stats[name]['threshold_grad_values']:
+                    gradient_stats[name]['threshold_grad_values'] = np.mean(gradient_stats[name]['threshold_grad_values'])
+                if gradient_stats[name]['input_grad_values']:
+                    gradient_stats[name]['input_grad_values'] = np.mean(gradient_stats[name]['input_grad_values'], axis=0)
+                if gradient_stats[name]['output_grad_values']:
+                    gradient_stats[name]['output_grad_values'] = np.mean(gradient_stats[name]['output_grad_values'], axis=0)
+                if gradient_stats[name]['threshold_values']:
+                    gradient_stats[name]['threshold_values'] = np.mean(gradient_stats[name]['threshold_values'])
+        
+        # 恢复原始训练状态
+        if original_training:
+            self.model.train()
+        else:
+            self.model.eval()
+        
+        return gradient_stats
+
     def analyze_gradients(self, dataloader, criterion, num_batches=5):
         """
         分析全连接层梯度分布
@@ -277,9 +563,156 @@ class GradientAnalyzer:
                 low_neurons = low_neurons[:int(len(sort_data) * ratio2)]
         return low_neurons
 
+    def get_selected_neurons(self, gradient_stats, order='low', ratio=0.1, sort_by='improved_method'):
+        """
+        基于改进的神经元重要性评估方法进行神经元选取
+        
+        参数:
+        gradient_stats - analyze_gradients_improved返回的统计数据
+        order - 排序方式: 'low'(从小到大), 'high'(从大到小), 'index'(按神经元序号), 'random'(随机)
+        ratio - 要选择的神经元比例
+        sort_by - 排序依据: 'improved_method'(改进方法)
+        
+        返回:
+        neurons_to_prune - 要剪枝的神经元列表
+        """
+        neurons_to_prune = []
+        
+        # FC层与IF层的对应关系映射
+        fc_to_if_mapping = {
+            'classifier.1': 'classifier.2',  # FC层 -> 对应的IF层
+            'classifier.4': 'classifier.5',  # FC层 -> 对应的IF层
+            # classifier.6 是最后一层，不进行剪枝
+        }
+        
+        for layer_name, stats in gradient_stats.items():
+            if layer_name == 'classifier.7':  # 跳过最后一层
+                continue
+                
+            # 只处理FC层（跳过IF层，因为我们不直接对IF层剪枝）
+            if stats.get('layer_type') != 'fc':
+                continue
+            
+         
+            # 根据sort_by选择排序数据
+            if sort_by == 'improved_method':
+                # 使用改进的方法计算神经元重要性
+                if layer_name not in fc_to_if_mapping:
+                    print(f"警告: FC层 {layer_name} 没有对应的IF层，跳过")
+                    continue
+                
+                if_layer_name = fc_to_if_mapping[layer_name]
+                if if_layer_name not in gradient_stats:
+                    print(f"警告: 对应的IF层 {if_layer_name} 没有梯度数据，跳过")
+                    continue
+                
+                if_stats = gradient_stats[if_layer_name]
+                if_output_grad = if_stats.get('output_grad_values')
+                if_input_grad = if_stats.get('input_grad_values')
+                
+                if if_output_grad is None:
+                    print(f"警告: IF层 {if_layer_name} 没有 output_grad_values 数据，跳过")
+                    continue
+                
+                if if_input_grad is None:
+                    print(f"警告: IF层 {if_layer_name} 没有 input_grad_values 数据，跳过")
+                    continue
+                
+                # 获取FC层的权重数据
+                fc_weight = None
+                for name, module in self.model.named_modules():
+                    if name == layer_name and isinstance(module, nn.Linear):
+                        # 计算每个输出神经元的平均权重值
+                        fc_weight = module.weight.data.abs().mean(dim=1).cpu().numpy()
+                        break
+                
+                if fc_weight is None:
+                    print(f"警告: 找不到FC层 {layer_name} 的权重数据，跳过")
+                    continue
+                
+                # 根据改进的方法计算神经元重要性
+                # grad_values = fc_weight / (if_input_grad/if_output_grad)
+                grad_values = fc_weight / (if_output_grad/if_input_grad)
+                
+                # 检查维度匹配
+                fc_output_size = None
+                for name, module in self.model.named_modules():
+                    if name == layer_name and isinstance(module, nn.Linear):
+                        fc_output_size = module.out_features
+                        break
+                
+                if fc_output_size is None:
+                    print(f"警告: 找不到FC层 {layer_name}，跳过")
+                    continue
+                
+                if len(grad_values) != fc_output_size:
+                    print(f"警告: FC层 {layer_name} 输出维度({fc_output_size}) 与 IF层 {if_layer_name} 梯度维度({len(grad_values)}) 不匹配，跳过")
+                    continue
+                
+                sort_data = grad_values
+            else:
+                print(f"警告: 未知的排序依据 '{sort_by}'，跳过该层")
+                continue
+            
+            # 根据排序方式对数据进行排序
+            if order == 'low' :
+                sorted_indices = np.argsort(sort_data)  # 从小到大排序
+            elif order == 'high':
+                sorted_indices = np.argsort(sort_data)[::-1]  # 从大到小排序
+            elif order == 'index':
+                sorted_indices = np.arange(len(sort_data))  # 按神经元序号排序
+            elif order == 'random':
+                # 随机打乱索引
+                sorted_indices = np.random.permutation(len(sort_data))
+            else:
+                # 默认按从小到大排序
+                sorted_indices = np.argsort(sort_data)
+            
+            # 计算要选择的神经元数量
+            num_select = int(len(sort_data) * ratio)
+            
+            # 收集神经元信息
+            for idx in sorted_indices[:num_select]:
+                # 获取权重信息
+                weight_info = 0.0
+                for name, module in self.model.named_modules():
+                    if name == layer_name and isinstance(module, nn.Linear):
+                        weight_data = module.weight.data
+                        weight_info = weight_data.abs().mean(dim=1).cpu().numpy()[idx]
+                        break
+                
+                # 构造神经元信息
+                neuron_info = {
+                    'layer': layer_name,
+                    'neuron_index': int(idx),
+                    'sort_value': float(sort_data[idx]),  # 用于排序的值
+                    'sort_by': sort_by,  # 排序依据
+                }
+                
+                # 如果使用improved_method，记录额外的信息
+                # if sort_by == 'improved_method':
+                #     neuron_info['gradient_type'] = 'improved_method'
+                #     neuron_info['if_layer'] = fc_to_if_mapping[layer_name]
+                #     neuron_info['if_gradient_value'] = float(sort_data[idx])
+                
+                neurons_to_prune.append(neuron_info)
+        
+        print(f"get_selected_neurons: 总共选择了 {len(neurons_to_prune)} 个神经元进行剪枝")
+        return neurons_to_prune
+
     def get_high_gradient_neurons(self, gradient_stats, ratio=0.1, sort_by='gradient'):
-        """选择高梯度/高权重/权重*梯度的前 ratio 比例神经元。"""
+        """选择高梯度/高权重/权重*梯度的前 ratio 比例神经元。
+        improved_method: 基于改进的神经元重要性评估方法进行神经元选取
+        """
         high_neurons = []
+        
+        # FC层与IF层的对应关系映射（用于improved_method）
+        fc_to_if_mapping = {
+            'classifier.1': 'classifier.2',  # FC层 -> 对应的IF层
+            'classifier.4': 'classifier.5',  # FC层 -> 对应的IF层
+            # classifier.6 是最后一层，不进行剪枝
+        }
+        
         for layer_name, stats in gradient_stats.items():
             if layer_name == 'classifier.7':
                 continue
@@ -303,6 +736,61 @@ class GradientAnalyzer:
                         weights = module.weight.data.abs().mean(dim=1).cpu().numpy()
                         sort_data = weights * grads
                         break
+            elif sort_by == 'improved_method':
+                # 使用改进的方法计算神经元重要性
+                if layer_name not in fc_to_if_mapping:
+                    print(f"警告: FC层 {layer_name} 没有对应的IF层，跳过")
+                    continue
+                
+                if_layer_name = fc_to_if_mapping[layer_name]
+                if if_layer_name not in gradient_stats:
+                    print(f"警告: 对应的IF层 {if_layer_name} 没有梯度数据，跳过")
+                    continue
+                
+                if_stats = gradient_stats[if_layer_name]
+                if_output_grad = if_stats.get('output_grad_values')
+                if_input_grad = if_stats.get('input_grad_values')
+                
+                if if_output_grad is None:
+                    print(f"警告: IF层 {if_layer_name} 没有 output_grad_values 数据，跳过")
+                    continue
+                
+                if if_input_grad is None:
+                    print(f"警告: IF层 {if_layer_name} 没有 input_grad_values 数据，跳过")
+                    continue
+                
+                # 获取FC层的权重数据
+                fc_weight = None
+                for name, module in self.model.named_modules():
+                    if name == layer_name and isinstance(module, nn.Linear):
+                        # 计算每个输出神经元的平均权重值
+                        fc_weight = module.weight.data.abs().mean(dim=1).cpu().numpy()
+                        break
+                
+                if fc_weight is None:
+                    print(f"警告: 找不到FC层 {layer_name} 的权重数据，跳过")
+                    continue
+                
+                # 根据改进的方法计算神经元重要性
+                # grad_values = fc_weight / (if_input_grad/if_output_grad)
+                grad_values = fc_weight / (if_output_grad/if_input_grad)
+                
+                # 检查维度匹配
+                fc_output_size = None
+                for name, module in self.model.named_modules():
+                    if name == layer_name and isinstance(module, nn.Linear):
+                        fc_output_size = module.out_features
+                        break
+                
+                if fc_output_size is None:
+                    print(f"警告: 找不到FC层 {layer_name}，跳过")
+                    continue
+                
+                if len(grad_values) != fc_output_size:
+                    print(f"警告: FC层 {layer_name} 输出维度({fc_output_size}) 与 IF层 {if_layer_name} 梯度维度({len(grad_values)}) 不匹配，跳过")
+                    continue
+                
+                sort_data = grad_values
             else:
                 sort_data = grads
 
@@ -493,19 +981,22 @@ class GradientAnalyzer:
         # 执行再生
         self.regenerate_neurons(neurons_to_regenerate)
 
+
     def adjust_neurons(self, gradient_stats, adjust_method, lr, device, check_interval, max_steps=1000, threshold_ratio_high=0.6, threshold_ratio_low=0.6, scale_factor_high=1.2, scale_factor_low=1.2, data_loader=None):
         """寻找高梯度神经元"""
         high_gradient_neurons = self.get_high_gradient_neurons(gradient_stats, ratio=0.1, sort_by='gradient')
-        
+        #high_gradient_neurons = self.get_high_gradient_neurons(gradient_stats, ratio=0.1, sort_by='improved_method')
+
         print(f"找到 {len(high_gradient_neurons)} 个高梯度神经元")
-        for neuron in high_gradient_neurons:
-            print(f"  - 层 {neuron['layer']} 神经元 {neuron['neuron_index']}: 梯度值 {neuron['grad_value']:.6f}")
+        #for neuron in high_gradient_neurons:
+            #print(f"  - 层 {neuron['layer']} 神经元 {neuron['neuron_index']}: 梯度值 {neuron['grad_value']:.6f}")
         
         # 打印模型的所有层名称，帮助调试
-        print("\n模型层名称:")
+        #print("\n模型层名称:")
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear) or isinstance(module, IF):
-                print(f"  {name}: {type(module).__name__}")
+                #print(f"  {name}: {type(module).__name__}")
+                pass
         
         device = next(self.model.parameters()).device
         criterion = nn.CrossEntropyLoss()
@@ -534,8 +1025,8 @@ class GradientAnalyzer:
 
             # 4. 每隔check_interval步检查并调整阈值
             if step % check_interval == 0:
-                print(f"\n--- 步数 {step}: 检查并调整阈值 ---")
-                print(f"检查 {len(high_gradient_neurons)} 个高梯度神经元")
+                #print(f"\n--- 步数 {step}: 检查并调整阈值 ---")
+                #print(f"检查 {len(high_gradient_neurons)} 个高梯度神经元")
                 for neuron_info in high_gradient_neurons:
                     layer_name = neuron_info['layer']
                     neuron_idx = neuron_info['neuron_index']
@@ -568,7 +1059,7 @@ class GradientAnalyzer:
                         total_checks = check_interval * max(1, T)
                         ratio = count / total_checks if total_checks > 0 else 0
                         
-                        print(f"  检查神经元 {neuron_idx}: count={count:.1f}, total_checks={total_checks}, ratio={ratio:.3f}")
+                        #print(f"  检查神经元 {neuron_idx}: count={count:.1f}, total_checks={total_checks}, ratio={ratio:.3f}")
 
                         if ratio > threshold_ratio_high or ratio < threshold_ratio_low:
                             with torch.no_grad():
@@ -584,16 +1075,16 @@ class GradientAnalyzer:
                                             if_layer.thresh[neuron_idx] *= scale_factor_low
                                             used_threshold = threshold_ratio_low
                                         new_thresh = float(if_layer.thresh[neuron_idx].item())
-                                        print(f"  - 层 {layer_name} 神经元 {neuron_idx}: critical_count比例 {ratio:.3f} 触发阈值 {used_threshold}，阈值从 {original_thresh:.4f} 调整为 {new_thresh:.4f}")
+                                        #print(f"  - 层 {layer_name} 神经元 {neuron_idx}: critical_count比例 {ratio:.3f} 触发阈值 {used_threshold}，阈值从 {original_thresh:.4f} 调整为 {new_thresh:.4f}")
                                     else:
                                         used_threshold = threshold_ratio_high if ratio > threshold_ratio_high else threshold_ratio_low
-                                        print(f"  - 层 {layer_name} 神经元 {neuron_idx}: critical_count比例 {ratio:.3f} 触发阈值 {used_threshold}，但阈值索引超出范围，跳过调整")
+                                        #print(f"  - 层 {layer_name} 神经元 {neuron_idx}: critical_count比例 {ratio:.3f} 触发阈值 {used_threshold}，但阈值索引超出范围，跳过调整")
                                         
                                 elif adjust_method == 'weight':
                                     target_module = dict(self.model.named_modules()).get(layer_name)
                                     if target_module is None or not isinstance(target_module, nn.Linear):
                                         used_threshold = threshold_ratio_high if ratio > threshold_ratio_high else threshold_ratio_low
-                                        print(f"  - 层 {layer_name} 神经元 {neuron_idx}: critical_count比例 {ratio:.3f} 触发阈值 {used_threshold}，但未找到对应的Linear层，跳过权重调整")
+                                        #print(f"  - 层 {layer_name} 神经元 {neuron_idx}: critical_count比例 {ratio:.3f} 触发阈值 {used_threshold}，但未找到对应的Linear层，跳过权重调整")
                                         continue
                                     
                                     # 检查权重索引是否在范围内
@@ -603,7 +1094,7 @@ class GradientAnalyzer:
                                         target_module.weight.data[neuron_idx, :] *= scale_factor_used
                                         new_norm = float(torch.norm(target_module.weight.data[neuron_idx, :]).item())
                                         used_threshold = threshold_ratio_high if ratio > threshold_ratio_high else threshold_ratio_low
-                                        print(f"  - 层 {layer_name} 神经元 {neuron_idx}: critical_count比例 {ratio:.3f} 触发阈值 {used_threshold}，输入权重范数从 {original_norm:.4f} 调整为 {new_norm:.4f}")
+                                        #print(f"  - 层 {layer_name} 神经元 {neuron_idx}: critical_count比例 {ratio:.3f} 触发阈值 {used_threshold}，输入权重范数从 {original_norm:.4f} 调整为 {new_norm:.4f}")
 
                                         # 进行模型权重微调
                                         self.model.train()
@@ -619,7 +1110,7 @@ class GradientAnalyzer:
                                         self.model.eval()
                                     else:
                                         used_threshold = threshold_ratio_high if ratio > threshold_ratio_high else threshold_ratio_low
-                                        print(f"  - 层 {layer_name} 神经元 {neuron_idx}: critical_count比例 {ratio:.3f} 触发阈值 {used_threshold}，但权重索引超出范围，跳过调整")
+                                        #print(f"  - 层 {layer_name} 神经元 {neuron_idx}: critical_count比例 {ratio:.3f} 触发阈值 {used_threshold}，但权重索引超出范围，跳过调整")
                                         
             # 在每次检查后重置 critical_count，开始新的计数周期
             if step % check_interval == 0:
@@ -915,19 +1406,7 @@ def main():
             train_loader, 
             criterion, 
             num_batches=args.num_batches
-        )
-        
-        # analyzer.print_gradient_analysis(gradient_stats)    
-        
-        # 获取低梯度神经元
-        low_gradient_neurons = analyzer.get_low_gradient_neurons(
-            gradient_stats, 
-            order=args.order,
-            ratio=args.pruning_ratio,
-            sort_by=args.sort_by
-        )
-        
-        
+        )    
         
         # 剪枝后评估
         # 做一次神经元调整
@@ -935,6 +1414,7 @@ def main():
         try:
             analyzer.adjust_neurons(
                 gradient_stats=gradient_stats,
+                #gradient_stats=gradient_stats_improved,
                 adjust_method='threshold',  # 或 'weight'
                 lr=1e-4,
                 device=device,
@@ -959,7 +1439,30 @@ def main():
         print(f"\n✅ 已保存调整后的模型到: {adjusted_model_path}")
         print(f"   阈值调整比例: {threshold_ratio}")
         #print(f"   调整后准确率: {post_accuracy:.2f}%")
+
+
+        gradient_stats_improved = analyzer.analyze_gradients_improved(
+            train_loader, 
+            criterion, 
+            num_batches=args.num_batches
+        )
+
+        # analyzer.print_gradient_analysis(gradient_stats)    
         
+        # 获取低梯度神经元
+        # low_gradient_neurons = analyzer.get_low_gradient_neurons(
+        #     gradient_stats, 
+        #     order=args.order,
+        #     ratio=args.pruning_ratio,
+        #     sort_by=args.sort_by
+        # )
+        low_gradient_neurons = analyzer.get_selected_neurons(
+            gradient_stats_improved, 
+            order=args.order,
+            ratio=args.pruning_ratio,
+            sort_by="improved_method"
+        )    
+
         
         # 执行剪枝,
         analyzer.prune_neurons(low_gradient_neurons)

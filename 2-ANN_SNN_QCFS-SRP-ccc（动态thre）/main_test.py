@@ -9,7 +9,7 @@ from Models import modelpool
 from Preprocess import datapool
 from utils import train, val, seed_all, get_logger
 from Models.layer import *
-from Models.layer import load_model_compatible
+# from Models.layer import load_model_compatible  # 该函数在当前版本中不存在
 import pandas as pd
 
 # 设置环境变量抑制cuDNN警告
@@ -52,6 +52,7 @@ def main():
     # preparing model
     model = modelpool(args.model, args.dataset)
 
+    # 首先尝试从checkpoints目录加载，如果失败则从当前目录加载
     model_dir = '%s-checkpoints'% (args.dataset)
     state_dict = torch.load(os.path.join(model_dir, args.identifier + '.pth'), map_location=torch.device('cpu'))
     

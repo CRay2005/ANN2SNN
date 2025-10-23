@@ -1,5 +1,5 @@
 import torch.nn as nn
-from Models.layer import *
+from Models.layer_copy import *
 
 cfg = {
     'VGG11': [
@@ -50,10 +50,10 @@ class VGG(nn.Module):
             self.classifier = nn.Sequential(
                 nn.Flatten(),
                 nn.Linear(512*7*7, 4096),
-                IF(),
+                IF(thresh=8.0),
                 nn.Dropout(dropout),
                 nn.Linear(4096, 4096),
-                IF(),
+                IF(thresh=8.0),
                 nn.Dropout(dropout),
                 nn.Linear(4096, num_classes)
             )
@@ -61,10 +61,10 @@ class VGG(nn.Module):
             self.classifier = nn.Sequential(
                 nn.Flatten(),
                 nn.Linear(512, 4096),
-                IF(),
+                IF(thresh=8.0),
                 nn.Dropout(dropout),
                 nn.Linear(4096, 4096),
-                IF(),
+                IF(thresh=8.0),
                 nn.Dropout(dropout),
                 nn.Linear(4096, num_classes)
             )
@@ -79,13 +79,21 @@ class VGG(nn.Module):
 
     def _make_layers(self, cfg, dropout):
         layers = []
+        # CIFAR-10输入尺寸跟踪
+        current_size = 32  # CIFAR-10初始尺寸
+        
         for x in cfg:
             if x == 'M':
                 layers.append(nn.AvgPool2d(kernel_size=2, stride=2))
+                current_size = current_size // 2  # 池化后尺寸减半
             else:
                 layers.append(nn.Conv2d(self.init_channels, x, kernel_size=3, padding=1))
                 layers.append(nn.BatchNorm2d(x))
-                layers.append(IF())
+                # 计算IF层的神经元数量：channels × height × width
+                #num_neurons = x * current_size * current_size
+                #layers.append(IF(num_neurons=num_neurons, thresh=8.0))
+                # 使用标量阈值（不指定num_neurons参数）
+                layers.append(IF(thresh=8.0))
                 layers.append(nn.Dropout(dropout))
                 self.init_channels = x
         return nn.Sequential(*layers)
@@ -133,10 +141,10 @@ class VGG_woBN(nn.Module):
             self.classifier = nn.Sequential(
                 nn.Flatten(),
                 nn.Linear(512*7*7, 4096),
-                IF(),
+                IF(thresh=8.0),
                 nn.Dropout(dropout),
                 nn.Linear(4096, 4096),
-                IF(),
+                IF(thresh=8.0),
                 nn.Dropout(dropout),
                 nn.Linear(4096, num_classes)
             )
@@ -144,10 +152,10 @@ class VGG_woBN(nn.Module):
             self.classifier = nn.Sequential(
                 nn.Flatten(),
                 nn.Linear(512, 4096),
-                IF(),
+                IF(thresh=8.0),
                 nn.Dropout(dropout),
                 nn.Linear(4096, 4096),
-                IF(),
+                IF(thresh=8.0),
                 nn.Dropout(dropout),
                 nn.Linear(4096, num_classes)
             )
@@ -163,12 +171,17 @@ class VGG_woBN(nn.Module):
 
     def _make_layers(self, cfg, dropout):
         layers = []
+        # CIFAR-10输入尺寸跟踪
+        current_size = 32  # CIFAR-10初始尺寸
+        
         for x in cfg:
             if x == 'M':
                 layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
+                current_size = current_size // 2  # 池化后尺寸减半
             else:
                 layers.append(nn.Conv2d(self.init_channels, x, kernel_size=3, padding=1))
-                layers.append(IF())
+                # 使用标量阈值（不指定num_neurons参数）
+                layers.append(IF(thresh=8.0))
                 layers.append(nn.Dropout(dropout))
                 self.init_channels = x
         return nn.Sequential(*layers)

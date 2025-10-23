@@ -12,9 +12,6 @@ from Models import modelpool
 from Preprocess import datapool
 from utils import seed_all
 from utils import mem_distribution
-from utils import evaluate_mem_distribution_similarity
-from utils import compare_multiple_neurons
-
 import pandas as pd
 import warnings
 from Models.layer import IF
@@ -701,7 +698,7 @@ class ComprehensiveNeuronAnalyzer:
         timestamp - 时间戳
         before_pruning_state - 剪枝前的模型状态（保留参数但不使用）
         """
-        # print("\n开始保存梯度信息...")
+        print("\n开始保存梯度信息...")
         
         # 确保log目录存在
         log_dir = "log_comprehensive_analysis"
@@ -826,6 +823,154 @@ class ComprehensiveNeuronAnalyzer:
         
         print("FC层和IF层梯度信息保存完成!")
 
+    def save_fc_if_correlation_analysis(self, model, gradient_stats, timestamp, neurons_to_prune=None):
+        """
+        保存FC层与对应IF层的关联分析数据到CSV文件
+        
+        参数:
+        model - 模型
+        gradient_stats - 梯度统计信息
+        timestamp - 时间戳
+        neurons_to_prune - 要剪枝的神经元列表，用于标识剪枝状态
+        """
+        print("\n开始保存FC层与IF层关联分析数据...")
+        
+        # 确保log目录存在
+        log_dir = "log_comprehensive_analysis"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+            print(f"创建目录: {log_dir}")
+        
+        # FC层与IF层的对应关系映射
+        fc_to_if_mapping = {
+            'classifier.1': 'classifier.2',
+            'classifier.4': 'classifier.5',
+        }
+        
+        # 遍历所有FC层
+        for fc_layer_name, module in model.named_modules():
+            if not isinstance(module, nn.Linear):
+                continue
+                
+            # 检查是否有对应的IF层
+            if fc_layer_name not in fc_to_if_mapping:
+                print(f"  FC层 {fc_layer_name} 没有对应的IF层，跳过")
+                continue
+                
+            if_layer_name = fc_to_if_mapping[fc_layer_name]
+            
+            # 检查FC层和IF层是否都有梯度数据
+            if fc_layer_name not in gradient_stats:
+                print(f"  警告: FC层 {fc_layer_name} 没有梯度数据，跳过")
+                continue
+                
+            if if_layer_name not in gradient_stats:
+                print(f"  警告: IF层 {if_layer_name} 没有梯度数据，跳过")
+                continue
+            
+            print(f"  处理FC层 {fc_layer_name} 与IF层 {if_layer_name} 的关联数据...")
+            
+            # 获取FC层数据
+            fc_stats = gradient_stats[fc_layer_name]
+            fc_weight_grad = fc_stats.get('weight_grad_values')
+            
+            # 获取FC层权重数据
+            fc_weight = None
+            for name, mod in model.named_modules():
+                if name == fc_layer_name and isinstance(mod, nn.Linear):
+                    # 计算每个输出神经元的平均权重值
+                    fc_weight = mod.weight.data.abs().mean(dim=1).cpu().numpy()
+                    break
+            
+            if fc_weight is None:
+                print(f"  警告: 找不到FC层 {fc_layer_name} 的权重数据，跳过")
+                continue
+            
+            # 获取IF层数据
+            if_stats = gradient_stats[if_layer_name]
+            if_output_grad = if_stats.get('output_grad_values')
+            if_input_grad = if_stats.get('input_grad_values')
+            
+            if if_output_grad is None or if_input_grad is None:
+                print(f"  警告: IF层 {if_layer_name} 缺少梯度数据，跳过")
+                continue
+            
+            # 检查维度匹配
+            fc_output_size = module.out_features
+            if len(fc_weight) != fc_output_size:
+                print(f"  警告: FC层 {fc_layer_name} 权重维度({len(fc_weight)}) 与输出维度({fc_output_size}) 不匹配，跳过")
+                continue
+                
+            if len(if_output_grad) != fc_output_size or len(if_input_grad) != fc_output_size:
+                print(f"  警告: FC层 {fc_layer_name} 输出维度({fc_output_size}) 与 IF层 {if_layer_name} 梯度维度不匹配，跳过")
+                continue
+            
+            # 计算剪枝依据值
+            # try:
+            #     # 避免除零错误
+            #     if np.any(if_output_grad < 1e-10):
+            #         print(f"  警告: IF层 {if_layer_name} 输出梯度包含接近零的值，跳过")
+            #         continue
+                    
+            #     if np.any(if_input_grad < 1e-10):
+            #         print(f"  警告: IF层 {if_layer_name} 输入梯度包含接近零的值，跳过")
+            #         continue
+                
+            #     # 计算剪枝依据值: fc_weight / (if_output_grad/if_input_grad)
+            #     pruning_criteria = fc_weight / (if_output_grad / if_input_grad)
+                
+            # except Exception as e:
+            #     print(f"  警告: 计算剪枝依据值时出错: {e}，跳过")
+            #     continue
+            
+            # 创建剪枝标识列表
+            pruning_status = [1] * fc_output_size  # 默认所有神经元都保留（1表示保留）
+            if neurons_to_prune is not None:
+                # 遍历要剪枝的神经元，将对应位置标记为0（剪枝）
+                for neuron_info in neurons_to_prune:
+                    if neuron_info['layer'] == fc_layer_name:
+                        neuron_idx = neuron_info['neuron_index']
+                        if 0 <= neuron_idx < fc_output_size:
+                            pruning_status[neuron_idx] = 0  # 0表示剪枝
+            
+            # 创建DataFrame
+            df_data = {
+                'neuron_id': range(fc_output_size),
+                'fc_layer_name': [fc_layer_name] * fc_output_size,
+                'if_layer_name': [if_layer_name] * fc_output_size,
+                'fc_weight': fc_weight,
+                'fc_weight_grad': fc_weight_grad if fc_weight_grad is not None else [0.0] * fc_output_size,
+                'if_output_grad': if_output_grad,
+                'if_input_grad': if_input_grad,
+                'if_grad_ratio': if_output_grad / if_input_grad,  # 输出梯度/输入梯度
+                'pruning_status': pruning_status,  # 剪枝状态：1=保留，0=剪枝
+               # 'pruning_criteria': pruning_criteria,  # fc_weight / (if_output_grad/if_input_grad)
+            }
+            
+            df = pd.DataFrame(df_data)
+            
+            # 保存到CSV文件
+            filename = f"fc_if_correlation_{fc_layer_name}_{if_layer_name}_{timestamp}.csv"
+            filepath = os.path.join(log_dir, filename)
+            df.to_csv(filepath, index=False)
+            
+            # 统计剪枝信息
+            pruned_count = sum(1 for status in pruning_status if status == 0)
+            kept_count = sum(1 for status in pruning_status if status == 1)
+            
+            print(f"    已保存关联分析数据到: {filepath}")
+            print(f"    神经元数量: {fc_output_size}")
+            print(f"    剪枝状态统计:")
+            print(f"      保留神经元: {kept_count} 个 (标识为1)")
+            print(f"      剪枝神经元: {pruned_count} 个 (标识为0)")
+            # print(f"    剪枝依据值统计:")
+            # print(f"      均值: {pruning_criteria.mean():.8f}")
+            # print(f"      标准差: {pruning_criteria.std():.8f}")
+            # print(f"      最小值: {pruning_criteria.min():.8f}")
+            # print(f"      最大值: {pruning_criteria.max():.8f}")
+        
+        print("FC层与IF层关联分析数据保存完成!")
+
 class OutputRedirector:
     """输出重定向器，同时输出到控制台和文件"""
     def __init__(self, filename):
@@ -909,8 +1054,8 @@ def main():
     parser.add_argument('--seed', default=42, type=int, help='随机种子')
     parser.add_argument('--mode', choices=['ann', 'snn'], default='snn', help='模式')
     parser.add_argument('--num_batches', default=5, type=int, help='梯度分析的批次数')
-    parser.add_argument('-r','--pruning_ratio', default=0.5, type=float, help='剪枝比例')
-    parser.add_argument('--dataset', choices=['cifar10', 'cifar100'], default='cifar100', help='数据集')
+    parser.add_argument('-r','--pruning_ratio', default=0.8, type=float, help='剪枝比例')
+    parser.add_argument('--dataset', choices=['cifar10', 'cifar100'], default='cifar10', help='数据集')
     parser.add_argument('--gradient_method', default='IF_output_grad_values', type=str, 
                        choices=['weight_grad_values', 'input_grad_values', 'output_grad_values', 'IF_output_grad_values'],
                        help='梯度类型选择（IF_output_grad_values表示使用对应IF层的输出梯度对FC层剪枝）')
@@ -935,8 +1080,8 @@ def main():
     model = modelpool('vgg16', args.dataset)
     
     # 直接加载预训练模型
-    # model_path = '/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP/cifar10-checkpoints/vgg16_wd[0.0005].pth'
-    model_path = '/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP/cifar100-checkpoints/vgg16_L[4].pth'
+    model_path = '/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP/cifar10-checkpoints/vgg16_wd[0.0005].pth'
+    # model_path = '/root/autodl-tmp/0-ANN2SNN-Allinone/2-ANN_SNN_QCFS-SRP/cifar100-checkpoints/vgg16_L[4].pth'
     
     print(f"加载预训练模型: {model_path}")
     state_dict = torch.load(model_path, map_location=torch.device('cpu'))
@@ -991,12 +1136,11 @@ def main():
             analyzer.analyze_gradient_correlation(gradient_stats)
 
         # 检测神经元膜电位分布
-        #targets = {
-        #    'classifier.2': [0, 5, 10, 15, 20, 25, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90],
-        #    'classifier.5': [3, 8, 13, 18, 23, 28, 33, 38, 43, 48, 53, 58, 63, 68, 73, 78, 83, 88],
-        #}
-        #collected_data = mem_distribution(model, test_loader, device, targets, max_batches=None, bins=50, save_dir='mem_plots', show=False)
-        
+        # targets = {
+        #     'classifier.2': [0, 5, 10, 15, 20, 25, 35, 40, 50, 60, 70, 80, 90],
+        #     'classifier.5': [3, 8, 13, 18, 23, 28, 33, 38, 43, 48, 53, 58, 63],
+        # }
+        # mem_distribution(model, test_loader, device, targets, max_batches=None, bins=50, save_dir='mem_plots', show=False)
         
         # 获取要剪枝的神经元
         neurons_to_prune = analyzer.get_comprehensive_pruning_neurons(
@@ -1006,85 +1150,24 @@ def main():
         )
         
         print(f"\n基于梯度分析，将剪枝 {len(neurons_to_prune)} 个神经元")
-        
-       # 检测神经元膜电位分布
-        targets = {
-            'classifier.2': [0, 5, 10, 15, 20, 25, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90],
-            'classifier.5': [3, 8, 13, 18, 23, 28, 33, 38, 43, 48, 53, 58, 63, 68, 73, 78, 83, 88],
-        }
-        collected_data = mem_distribution(model, test_loader, device, targets, max_batches=None, bins=50, save_dir='mem_plots', show=False, x_range=(-2, 2))
-        
-        # 评估classifier.5层中多个神经元的分布相似度
-        print("\n" + "="*60)
-        print("多神经元膜电位分布相似度分析")
-        print("="*60)
-        
-        neuron_indices = [3, 8, 53]
-        similarity_matrix, indices = compare_multiple_neurons(
-            collected_data, 
-            'classifier.5', 
-            neuron_indices, 
-            method='js'
-        )
 
-        print(f"\nclassifier.5 层神经元相似度矩阵 (JS相似度):")
-        print("神经元索引:", indices)
-        print("相似度矩阵:")
-        print(similarity_matrix)
-
-        # 继续测试：选出 neurons_to_prune 中权重最大的10个神经元，计算他们之间的分布相似度
-        print("\n" + "="*60)
-        print("Top-10 权重最大神经元的分布相似度分析（按层）")
-        print("="*60)
-
-        # 1) 选出前10个（按weight_value排序，降序）
-        top_k = 10
-        sorted_neurons = sorted(neurons_to_prune, key=lambda x: x.get('weight_value', 0.0), reverse=True)
-        top_neurons = sorted_neurons[:top_k]
-
-        # 2) 将FC层映射到对应的IF层（只对classifier映射，若其它层可按需扩展）
-        fc_to_if_mapping = {
-            'classifier.1': 'classifier.2',
-            'classifier.4': 'classifier.5',
-        }
-
-        # 3) 组织targets：{ if_layer: [neuron_indices...] }
-        top_targets = {}
-        for item in top_neurons:
-            fc_layer = item.get('layer')
-            idx = item.get('neuron_index')
-            if fc_layer in fc_to_if_mapping and idx is not None:
-                if_layer = fc_to_if_mapping[fc_layer]
-                top_targets.setdefault(if_layer, []).append(idx)
-
-        if len(top_targets) == 0:
-            print("未找到可映射到IF层的Top-10神经元，跳过相似度分析。")
-        else:
-            # 4) 收集膜电位（固定x轴范围以便对比）
-            collected_top = mem_distribution(
-                model, test_loader, device, top_targets,
-                max_batches=None, bins=50, save_dir='mem_plots_top10', show=False,
-                x_range=(-2, 2)
-            )
-
-            # 5) 对每个IF层分别计算JS相似度矩阵
-            import numpy as np
-            for if_layer, neuron_list in top_targets.items():
-                if len(neuron_list) < 2:
-                    continue
-                # 去重并排序，保证输出稳定
-                neuron_list = sorted(list(set(neuron_list)))
-                sim_matrix, indices = compare_multiple_neurons(
-                    collected_top, if_layer, neuron_list, method='js'
-                )
-                print(f"\n{if_layer} 层 Top-10 中选取的神经元相似度矩阵 (JS相似度):")
-                print("神经元索引:", indices)
-                print("相似度矩阵:")
-                print(sim_matrix)
-
-
+        # 保存梯度分析信息（剪枝前）
+        if args.save_analysis:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            analyzer.save_comprehensive_analysis(model, gradient_stats, timestamp, initial_state)
+            # 保存FC层与IF层关联分析数据，包含剪枝信息
+            analyzer.save_fc_if_correlation_analysis(model, gradient_stats, timestamp, neurons_to_prune)
+               
         # 执行剪枝
         analyzer.prune_neurons(neurons_to_prune)
+        
+        # 检测神经元膜电位分布
+        #targets = {
+        #    'classifier.2': [0, 5, 10, 15, 20, 25, 35, 40, 50, 60, 70, 80, 90],
+        #    'classifier.5': [3, 8, 13, 18, 23, 28, 33, 38, 43, 48, 53, 58, 63],
+        #}
+        #mem_distribution(model, test_loader, device, targets, max_batches=None, bins=50, save_dir='mem_plots', show=False)
+        
         # 剪枝后评估
         print("\n剪枝后评估:")
         post_accuracy, post_loss = evaluate_model(model, test_loader, criterion, device, args.seed)
@@ -1096,11 +1179,7 @@ def main():
         print(f"准确率变化: {post_accuracy - pre_accuracy:+.2f}%")
         print(f"损失变化: {post_loss - pre_loss:+.6f}")
         
-        # 保存梯度分析信息
-        if args.save_analysis:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            analyzer.save_comprehensive_analysis(model, gradient_stats, timestamp, initial_state)
-                  
+           
     finally:
         # 清理梯度钩子
         analyzer.cleanup_hooks()

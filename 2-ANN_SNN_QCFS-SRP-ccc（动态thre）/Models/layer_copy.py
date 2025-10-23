@@ -1,23 +1,6 @@
-'''
-        #第一步粗略调整threshold,适当上调thre使得脉冲能在T时间发放完成
-        ub = self.thre
-        #把T时间的x平均之后与thre比较,thre = thre + k * ((x_average) - thre) * (x_average > thre)
-        #x_average = x.mean(0, keepdim=True)
-        #v(T)-v(0)/T = thre - x_average
-        #thre = thre + k * (v(T)-v(0)/T - thre) * (v(T)-v(0)/T > thre)
-        #thre = thre + k * (v(T)-v(0)/T - thre) * (v(T)-v(0)/T > thre)
-        #第二步用类似关于误差的rnn精细训练thre
-        #v(T)-v(0)/T要转化为关于thre的式子，通过第一步可以理想估计发送脉冲数为(x/thre取整)
-        #故 v(T)-v(0)/T = (x - 取整x/thre * thre)/T,thre微调过程可假设x/thre取整是常数
-        
-        #第三步剪枝,去除误差仍很大或响应很小的神经元
-'''
-
-from cv2 import mean
-from sympy import print_rcode
-from collections import defaultdict
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import math
 
@@ -116,8 +99,11 @@ class IF(nn.Module):
                  surrogate_grad='sigmoid', scale=5, num_neurons=0):
         super(IF, self).__init__()
         self.act = ZIF.apply
-        # 强制使用标量阈值，忽略num_neurons参数
-        self.thresh = nn.Parameter(torch.tensor([thresh]), requires_grad=True)
+        # 如果指定了神经元数量，创建向量阈值；否则使用标量阈值
+        if num_neurons > 0:
+            self.thresh = nn.Parameter(torch.full((num_neurons,), thresh), requires_grad=True)
+        else:
+            self.thresh = nn.Parameter(torch.tensor([thresh]), requires_grad=True)
         self.tau = tau
         self.gama = gama
         self.expand = ExpandTemporalDim(T)
@@ -304,10 +290,29 @@ class IF(nn.Module):
             x = self.merge(x)
 
         else:
-            x = x / self.thresh
-            x = torch.clamp(x, 0, 1)
-            x = myfloor(x*self.L+0.5)/self.L
-            x = x * self.thresh
+            # ANN模式：处理阈值维度匹配问题
+            if self.thresh.numel() == 1:
+                # 标量阈值，直接广播
+                x = x / self.thresh
+                x = torch.clamp(x, 0, 1)
+                x = myfloor(x*self.L+0.5)/self.L
+                x = x * self.thresh
+            else:
+                # 向量阈值，需要reshape到匹配输入形状
+                input_shape = x.shape[1:]  # 去掉batch维度
+                if self.thresh.numel() == input_shape.numel():
+                    # 阈值向量大小与输入匹配，reshape后广播
+                    thresh_reshaped = self.thresh.view(input_shape).unsqueeze(0).expand_as(x)
+                    x = x / thresh_reshaped
+                    x = torch.clamp(x, 0, 1)
+                    x = myfloor(x*self.L+0.5)/self.L
+                    x = x * thresh_reshaped
+                else:
+                    # 阈值向量大小不匹配，使用第一个值
+                    x = x / self.thresh[0]
+                    x = torch.clamp(x, 0, 1)
+                    x = myfloor(x*self.L+0.5)/self.L
+                    x = x * self.thresh[0]
         return x
 
 def add_dimention(x, T):

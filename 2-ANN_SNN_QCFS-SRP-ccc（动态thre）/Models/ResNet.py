@@ -5,7 +5,7 @@
 """
 from matplotlib.pyplot import xlim
 import torch.nn as nn
-from Models.layer import *
+from Models.layer_copy import *
 
 class BasicBlock(nn.Module):
     """Basic Block for resnet 18 and resnet 34
