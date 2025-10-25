@@ -122,8 +122,8 @@ class IF(nn.Module):
     
 
         self.spike_count = 0
-        self.spike_count_tensor = torch.tensor(0.0)
-        self.mem = 0.5 * self.thresh
+        self.spike_count_tensor = None  # 延迟初始化，在forward中根据输入形状设置
+        self.mem = None  # 延迟初始化，在forward中根据输入形状设置
         self.predict_spike = torch.tensor(-1.0)
         self.record_spike = torch.tensor(0.0)
         # 是否记录时间维上的膜电位历史（仅在需要时开启，避免额外内存开销）
@@ -184,8 +184,13 @@ class IF(nn.Module):
                     # 阈值向量大小不匹配，使用第一个值
                     mem = 0.5 * thre[0]
             
+            # 保存初始mem到层属性，供阈值调整使用
+            self.mem = mem.detach()
+            
             # 按当前批次的形状初始化计数张量，确保与 spike_binary 对齐
-            self.spike_count_tensor = torch.zeros_like(x[0, ...])
+            # 只在第一次或形状变化时重新初始化
+            if self.spike_count_tensor is None or self.spike_count_tensor.shape != x[0, ...].shape:
+                self.spike_count_tensor = torch.zeros_like(x[0, ...])
             spike_pot = []
 
             # QCFC处理 - 使用模拟梯度============================================
@@ -258,8 +263,15 @@ class IF(nn.Module):
                 mem = mem - spike
                 spike_pot.append(spike)
                 
+                # 保存mem到层属性，供阈值调整使用
+                self.mem = mem.detach()
+                
 
-                # 预测脉冲
+                # 预测脉冲 - 确保形状匹配
+                if self.predict_spike.shape != spike_binary.shape:
+                    self.predict_spike = torch.full_like(spike_binary, -1.0)
+                if self.record_spike.shape != spike_binary.shape:
+                    self.record_spike = torch.zeros_like(spike_binary)
                 self.predict_spike = torch.where(spike_binary == 1, 0.0, self.predict_spike)
                 self.predict_spike = torch.where(self.record_spike == 1, -1.0, self.predict_spike)
                 
@@ -286,6 +298,7 @@ class IF(nn.Module):
                 self.critical_count += temporal_critical_count
 
             self.mem = mem
+            # 显存优化：使用原有的时间累积方式，但在循环中及时释放
             x = torch.stack(spike_pot, dim=0)
             x = self.merge(x)
 

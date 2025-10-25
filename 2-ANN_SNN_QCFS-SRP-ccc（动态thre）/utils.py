@@ -8,7 +8,8 @@ import numpy as np
 import random
 import os
 import logging
-from Models import IF
+# 导入IF类用于类型检查
+from Models.layer_copy import IF
 
 def seed_all(seed=1029):
     random.seed(seed)
@@ -73,15 +74,41 @@ def train_with_thre(model, device, train_loader, criterion, optimizer, T=None, s
     M = len(train_loader)
     total = 0
     correct = 0
+    
+    # 初始化thre_grads_history列表
+    thre_grads_history = []
+    
+    # 如果没有提供layer_weights，创建默认的权重
+    if layer_weights is None:
+        # 根据模型类型确定IF层数量
+        model_name = model.__class__.__name__.lower()
+        if 'vgg' in model_name:
+            layer_weights = torch.ones(2, device=device, requires_grad=True)  # VGG有2个全连接层后的IF层
+        else:
+            # 其他模型：自动计算IF层数量
+            all_if_layers = [name for name, m in model.named_modules() if isinstance(m, IF)]
+            layer_weights = torch.ones(len(all_if_layers), device=device, requires_grad=True)
 
-    # 收集阈值梯度的历史（仅在需要时）
-    thre_grads_history = [] if return_thre_grads else None
-
-    # 定义全连接层后的IF层名称（根据你的模型结构调整）
-    fc_if_layers = ['classifier.2', 'classifier.5']  # 根据实际模型结构调整
+    # 根据模型类型动态选择IF层名称
+    model_name = model.__class__.__name__.lower()
+    if 'vgg' in model_name:
+        # VGG模型：选择全连接层后的IF层
+        fc_if_layers = ['classifier.2', 'classifier.5']
+        print(f"[INFO] 检测到VGG模型，选择IF层: {fc_if_layers}")
+    elif 'resnet' in model_name:
+        # ResNet模型：选择最后两个IF层
+        fc_if_layers = ['conv4_x.2.act', 'conv3_x.2.act']
+        print(f"[INFO] 检测到ResNet模型，选择IF层: {fc_if_layers}")
+    else:
+        # 其他模型：自动选择最后两个IF层
+        all_if_layers = [name for name, m in model.named_modules() if isinstance(m, IF)]
+        fc_if_layers = all_if_layers[-2:] if len(all_if_layers) >= 2 else all_if_layers
+        print(f"[INFO] 检测到{model_name}模型，自动选择最后两个IF层: {fc_if_layers}")
 
     # 基于 named_modules() 仅为目标 IF 层构建有序列表与 name->index 映射
+    
     targeted_if_layers = [(name, m) for name, m in model.named_modules() if isinstance(m, IF) and name in fc_if_layers]
+    
     name_to_if_index = {name: idx for idx, (name, _m) in enumerate(targeted_if_layers)}
 
     for i, (images, labels) in enumerate((train_loader)):
@@ -91,7 +118,8 @@ def train_with_thre(model, device, train_loader, criterion, optimizer, T=None, s
         images = images.to(device)
 
         # 强制以ANN模式运行（T=0）
-        original_T = getattr(model, 'T', 0)
+        #original_T = getattr(model, 'T', 0)
+        original_T = T
         model.set_T(0)
 
         outputs = model(images)
@@ -105,8 +133,12 @@ def train_with_thre(model, device, train_loader, criterion, optimizer, T=None, s
 
         # ===== 周期性：调整 SNN 阈值梯度（简化版） =====
         if adjust_interval > 0 and ((i + 1) % adjust_interval == 0):
-                        
+            
+            model.eval()  #===================================================            
             model.set_T(original_T)
+            
+            # 内存优化：清理梯度缓存   #===================================
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
             
             # 只对全连接层后的IF层进行梯度探测
             named_if_modules = []
@@ -119,13 +151,38 @@ def train_with_thre(model, device, train_loader, criterion, optimizer, T=None, s
             # ===== 直接对当前batch进行阈值更新 =====
             with torch.no_grad():
                 # 运行SNN模式获取最后时刻的mem
-                if T is not None and T > 0:
-                    for t in range(T):
-                        _ = model(images)
+                if model.T is not None and model.T > 0:
+                    # 重置所有IF层的spike_count_tensor，确保从0开始累积
+                    for name, m in model.named_modules():
+                        if isinstance(m, IF) and name in fc_if_layers:
+                            if hasattr(m, 'spike_count_tensor') and m.spike_count_tensor is not None:
+                                m.spike_count_tensor.zero_()
+                    
+                    # 运行SNN模式，让spike_count_tensor正确累积
+                    _ = model(images)
+                    
+                    # 内存优化：清理SNN前向传播的中间结果   #====================
+                    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+                    
+                    # 调试：检查SNN模式运行后mem的状态
+                    print(f"[DEBUG] SNN模式运行后，检查mem状态:")
+                    for name, m in model.named_modules():
+                        if isinstance(m, IF) and name in fc_if_layers:
+                            mem = getattr(m, 'mem', None)
+                            spike_cnt = getattr(m, 'spike_count_tensor', None)
+                            print(f"[DEBUG] {name}: mem类型={type(mem)}, spike_cnt类型={type(spike_cnt)}")
+                            if isinstance(mem, torch.Tensor):
+                                print(f"[DEBUG] {name}: mem形状={mem.shape}")
+                            if isinstance(spike_cnt, torch.Tensor):
+                                print(f"[DEBUG] {name}: spike_cnt形状={spike_cnt.shape}")
                 
                 # 计算每层的update_value并更新阈值
                 layer_update_values = []
+                
                 for name, m in named_if_modules:
+                    
+                    update_value_scalar = 0.0  # 默认值
+                    
                     if isinstance(m, IF) and name in fc_if_layers:
                         mem = getattr(m, 'mem', None)
                         spike_cnt = getattr(m, 'spike_count_tensor', None)
@@ -140,25 +197,34 @@ def train_with_thre(model, device, train_loader, criterion, optimizer, T=None, s
                                 update_value_scalar = prod_predict.mean().item()  # 对所有元素求平均，得到标量
                                 mem_spike_avg_scalar = mem_spike_avg.mean().item() if mem_spike_avg.dim() > 0 else mem_spike_avg.item()
                                 update_value_scalar = - mem_spike_avg_scalar + scale_factor * update_value_scalar
-                                layer_update_values.append(update_value_scalar)
+                                
+                                print(f"[DEBUG] {name}: 成功计算，update_value_scalar={update_value_scalar:.6f}")
                                 
                                 if layer_weights is not None:
                                     idx = name_to_if_index.get(name, None)
                                     if idx is not None and idx < len(layer_weights):
                                         lw_scalar = layer_weights[idx].item() if torch.is_tensor(layer_weights[idx]) else float(layer_weights[idx])
-                                        m.thresh = m.thresh - lw_scalar * update_value_scalar * adjust_scale_factor
+                                        # 使用in-place操作更新阈值，保持梯度连接
+                                        threshold_update = lw_scalar * update_value_scalar * adjust_scale_factor
+                                        m.thresh.data.sub_(threshold_update)
                                 
                                 spike_cnt.zero_()
-                            except Exception:
-                                layer_update_values.append(0.0)
+                            except Exception as e:
+                                print(f"[DEBUG] {name}: 异常 {e}，使用默认值0.0")
+                                update_value_scalar = 0.0
                         else:
-                            layer_update_values.append(0.0)
+                            print(f"[DEBUG] {name}: mem或spike_cnt不是tensor，使用默认值0.0")
+                            update_value_scalar = 0.0
                     else:
-                        layer_update_values.append(0.0)
+                        print(f"[DEBUG] {name}: 不是IF或不在fc_if_layers中，使用默认值0.0")
+                        update_value_scalar = 0.0
+                    
+                    # 每个层只添加一次值
+                    layer_update_values.append(update_value_scalar)
                 
                 # 保存avg_update_values用于后续layer_weights更新
                 avg_update_values = torch.tensor(layer_update_values, device=device)
-
+                
             if len(thresh_tensors) > 0 and probe_num_batches > 0:
                 # 使用训练数据迭代器
                 data_iter = iter(train_loader)
@@ -168,11 +234,21 @@ def train_with_thre(model, device, train_loader, criterion, optimizer, T=None, s
                 used_batches = 0
                 sum_update_values = 0.0  # 累计update_value用于后续计算
                 
+                # 内存优化：减少探测批次大小  #====================
+                probe_batch_size = min(32, images.shape[0])  # 限制探测批次大小
+                
                 for _ in range(probe_num_batches):
                     try:
                         p_images, p_labels = next(data_iter)
                     except StopIteration:
                         break
+                    
+                    # 内存优化：如果批次太大，只使用部分数据   #====================
+                    if p_images.shape[0] > probe_batch_size:
+                        indices = torch.randperm(p_images.shape[0])[:probe_batch_size]
+                        p_images = p_images[indices]
+                        p_labels = p_labels[indices]
+                    
                     p_images = p_images.to(device)
                     p_labels = p_labels.to(device)
 
@@ -195,6 +271,12 @@ def train_with_thre(model, device, train_loader, criterion, optimizer, T=None, s
                         if g is not None:
                             sum_grads[idx] += g.detach()
                     used_batches += 1
+                    
+                    # 内存优化：及时清理中间变量   #===================================
+                    del p_images, p_labels, p_outputs, p_loss
+                    if 'grads' in locals():
+                        del grads
+                    torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
                 # 计算平均梯度
                 if used_batches > 0:
@@ -212,11 +294,23 @@ def train_with_thre(model, device, train_loader, criterion, optimizer, T=None, s
                         })
                 
                     # 更新layer_weights
-                    if layer_weights is not None:
-                        layer_weights = layer_weights - adjust_scale_factor * avg_grads / (avg_update_values + 1e-8)
-
+                    if layer_weights is not None and layer_weights.requires_grad:
+                        # 确保avg_grads的形状与layer_weights匹配
+                        if avg_grads.shape != layer_weights.shape:
+                            avg_grads = avg_grads.squeeze()  # 移除多余的维度
+                        
+                        # 使用更稳定的更新公式，避免数值发散
+                        update_step = adjust_scale_factor * avg_grads
+                        # 限制更新步长，防止发散
+                        max_update = 0.001  # 最大更新步长
+                        update_step = torch.clamp(update_step, -max_update, max_update)
+                        
+                        # 使用in-place操作更新权重
+                        layer_weights.data.sub_(update_step)
+                        
     # 训练结束后恢复为ANN模式
     model.set_T(0)
+    model.train()  #===================================================    
     
     if return_thre_grads:
         return running_loss, 100 * correct / total, thre_grads_history

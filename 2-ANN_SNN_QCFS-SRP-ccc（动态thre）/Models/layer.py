@@ -136,7 +136,7 @@ class IF(nn.Module):
     
 
         self.spike_count = 0
-        self.spike_count_tensor = torch.tensor(0.0)
+        self.spike_count_tensor = None  # 延迟初始化，在forward中根据输入形状设置
         self.mem = 0.5 * self.thresh
         self.predict_spike = torch.tensor(-1.0)
         self.record_spike = torch.tensor(0.0)
@@ -199,7 +199,9 @@ class IF(nn.Module):
                     mem = 0.5 * thre[0]
             
             # 按当前批次的形状初始化计数张量，确保与 spike_binary 对齐
-            self.spike_count_tensor = torch.zeros_like(x[0, ...])
+            # 只在第一次或形状变化时重新初始化
+            if self.spike_count_tensor is None or self.spike_count_tensor.shape != x[0, ...].shape:
+                self.spike_count_tensor = torch.zeros_like(x[0, ...])
             spike_pot = []
 
             # QCFC处理 - 使用模拟梯度============================================

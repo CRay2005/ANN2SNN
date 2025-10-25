@@ -50,10 +50,10 @@ class VGG(nn.Module):
             self.classifier = nn.Sequential(
                 nn.Flatten(),
                 nn.Linear(512*7*7, 4096),
-                IF(thresh=8.0),
+                IF(thresh=0.5),
                 nn.Dropout(dropout),
                 nn.Linear(4096, 4096),
-                IF(thresh=8.0),
+                IF(thresh=0.5),
                 nn.Dropout(dropout),
                 nn.Linear(4096, num_classes)
             )
@@ -61,10 +61,10 @@ class VGG(nn.Module):
             self.classifier = nn.Sequential(
                 nn.Flatten(),
                 nn.Linear(512, 4096),
-                IF(thresh=8.0),
+                IF(thresh=0.5),
                 nn.Dropout(dropout),
                 nn.Linear(4096, 4096),
-                IF(thresh=8.0),
+                IF(thresh=0.5),
                 nn.Dropout(dropout),
                 nn.Linear(4096, num_classes)
             )
@@ -93,7 +93,7 @@ class VGG(nn.Module):
                 #num_neurons = x * current_size * current_size
                 #layers.append(IF(num_neurons=num_neurons, thresh=8.0))
                 # 使用标量阈值（不指定num_neurons参数）
-                layers.append(IF(thresh=8.0))
+                layers.append(IF(thresh=0.5))
                 layers.append(nn.Dropout(dropout))
                 self.init_channels = x
         return nn.Sequential(*layers)
@@ -141,10 +141,10 @@ class VGG_woBN(nn.Module):
             self.classifier = nn.Sequential(
                 nn.Flatten(),
                 nn.Linear(512*7*7, 4096),
-                IF(thresh=8.0),
+                IF(thresh=0.5),
                 nn.Dropout(dropout),
                 nn.Linear(4096, 4096),
-                IF(thresh=8.0),
+                IF(thresh=0.5),
                 nn.Dropout(dropout),
                 nn.Linear(4096, num_classes)
             )
@@ -152,10 +152,10 @@ class VGG_woBN(nn.Module):
             self.classifier = nn.Sequential(
                 nn.Flatten(),
                 nn.Linear(512, 4096),
-                IF(thresh=8.0),
+                IF(thresh=0.5),
                 nn.Dropout(dropout),
                 nn.Linear(4096, 4096),
-                IF(thresh=8.0),
+                IF(thresh=0.5),
                 nn.Dropout(dropout),
                 nn.Linear(4096, num_classes)
             )
@@ -181,7 +181,7 @@ class VGG_woBN(nn.Module):
             else:
                 layers.append(nn.Conv2d(self.init_channels, x, kernel_size=3, padding=1))
                 # 使用标量阈值（不指定num_neurons参数）
-                layers.append(IF(thresh=8.0))
+                layers.append(IF(thresh=0.5))
                 layers.append(nn.Dropout(dropout))
                 self.init_channels = x
         return nn.Sequential(*layers)

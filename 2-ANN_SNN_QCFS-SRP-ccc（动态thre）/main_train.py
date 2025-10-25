@@ -10,6 +10,8 @@
 
 3. 阈值自适应训练（返回梯度历史）:
    python main_train.py --dataset cifar10 --model vgg16 --epochs 100 --use_thre_training --return_thre_grads
+
+   python main_train.py --dataset cifar10 --model vgg16 --epochs 300 --use_thre_training --adjust_interval 50 --probe_num_batches 5 --adjust_scale_factor 0.01 --suffix thre-run
 """
 
 import argparse
@@ -93,7 +95,7 @@ def main():
         # 统计IF层数量
         if_layers = [m for m in model.modules() if hasattr(m, 'thresh') and m.thresh is not None]
         if len(if_layers) > 0:
-            layer_weights = torch.ones(len(if_layers), device=device) * 0.01  # 初始化为小值
+            layer_weights = torch.ones(2, device=device) * 0.01  # 初始化为小值
             print(f"初始化 {len(if_layers)} 个IF层的权重: {layer_weights}")
         else:
             print("警告: 未找到IF层，将使用标准训练")
@@ -139,6 +141,27 @@ def main():
             loss, acc = train(model, device, train_loader, criterion, optimizer, args.time)
         
         logger.info('Epoch:[{}/{}]\t loss={:.5f}\t acc={:.3f}'.format(epoch , args.epochs, loss, acc))
+        
+        # 输出阈值和layer_weights信息（仅在阈值自适应训练模式下）
+        if args.use_thre_training and layer_weights is not None:
+            logger.info('=' * 80)
+            logger.info(f'Epoch [{epoch}] - 阈值和权重信息:')
+            
+            # 输出所有IF层的阈值信息
+            if_layers = [(name, m) for name, m in model.named_modules() if hasattr(m, 'thresh') and m.thresh is not None]
+            logger.info(f'总IF层数量: {len(if_layers)}')
+            
+            for idx, (name, m) in enumerate(if_layers):
+                thresh_val = m.thresh.item() if m.thresh.numel() == 1 else m.thresh.mean().item()
+                logger.info(f'  IF层[{idx}] {name}: 阈值={thresh_val:.6f}')
+            
+            # 输出layer_weights信息
+            logger.info(f'Layer_weights数量: {len(layer_weights)}')
+            for idx, weight in enumerate(layer_weights):
+                weight_val = weight.item() if torch.is_tensor(weight) else weight
+                logger.info(f'  Layer_weight[{idx}]: {weight_val:.6f}')
+            
+        
         scheduler.step()
         tmp = val(model, test_loader, device, args.time)
         logger.info('Epoch:[{}/{}]\t Test acc={:.3f}\n'.format(epoch , args.epochs, tmp))
